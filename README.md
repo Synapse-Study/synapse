@@ -53,3 +53,16 @@
 - **Mac:** Apple Silicon (M1 or newer) running macOS 13+
 - **Anki Integration:** [Anki Desktop](https://apps.ankiweb.net/) running with the **AnkiConnect** add-on (`2055492159`) installed
 - **AI Features:** Free API keys from [Google AI Studio](https://aistudio.google.com/apikey)
+
+  <p>
+    <img src="https://img.shields.io/badge/Python-3.12-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python 3.12" />
+    <img src="https://img.shields.io/badge/Built_with-ChatGPT-10A37F?style=flat-square&logo=openai&logoColor=white" alt="Built with ChatGPT" />
+    <img src="https://img.shields.io/badge/Built_with-Antigravity-6366F1?style=flat-square" alt="Built with Antigravity" />
+  </p>
+
+---
+
+<p align="center">
+  Built for KCL MBBS students using <strong>Python 3.12</strong>, <strong>ChatGPT</strong>, and <strong>Antigravity</strong>.
+</p>
+
