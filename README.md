@@ -7,7 +7,7 @@
   <p>Convert KCL lecture slides into Image Occlusion Anki cards, structured Notion notes, AI-tutored Q&A, and synced SBA practice—all in one native macOS app.</p>
 
   <p>
-    <a href="https://github.com/Sreerahul123/synapse/releases/latest/download/Synapse.dmg">
+    <a href="https://github.com/Synapse-Study/synapse/releases/latest/download/Synapse.dmg">
       <img src="https://img.shields.io/badge/Download_for_macOS_(Apple_Silicon)-v2.1.0-2563EB?style=for-the-badge&logo=apple&logoColor=white" alt="Download Synapse for macOS" />
     </a>
   </p>
@@ -37,9 +37,9 @@
 
 ---
 
-## Installation (macOS Apple Silicon)
+## Installation (macOS Apple Silicon — M1 / M2 / M3 / M4)
 
-1. Download **`Synapse.dmg`** using the button above (or from [Releases](https://github.com/Sreerahul123/synapse/releases/latest)).
+1. Download **`Synapse.dmg`** using the button above (or from [Releases](https://github.com/Synapse-Study/synapse/releases/latest)).
 2. Open `Synapse.dmg` and drag **Synapse** into your **Applications** folder.
 3. **First-time launch only:** Because Synapse is independently distributed outside the Mac App Store, macOS Gatekeeper will ask for confirmation the first time you open it:
    - Open **Applications**, **Right-click (or Control-click) Synapse**, and select **Open → Open**.
