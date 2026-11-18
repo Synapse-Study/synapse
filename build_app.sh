@@ -79,6 +79,7 @@ echo "Building dist/Synapse.app with PyInstaller..."
     --add-data "gui:gui" \
     --add-data "references:references" \
     --add-data "my-lecture-notes.md:." \
+    --add-data ".easyocr_models:.easyocr_models" \
     --collect-all webview \
     --collect-all easyocr \
     --collect-all torchvision \

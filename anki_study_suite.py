@@ -1039,10 +1039,28 @@ class OCREngine:
         try:
             with _C_EXTENSION_LOCK:
                 import easyocr
-                self._reader = easyocr.Reader(["en"], gpu=False, verbose=False)
+
+                # Check for bundled pre-trained models in BUNDLE_DIR / .easyocr_models
+                bundled_models = BUNDLE_DIR / ".easyocr_models"
+                if bundled_models.exists() and (bundled_models / "craft_mlt_25k.pth").exists():
+                    models_dir = bundled_models
+                else:
+                    models_dir = APP_DATA_DIR / "ocr_models"
+                models_dir.mkdir(parents=True, exist_ok=True)
+
+                network_dir = APP_DATA_DIR / "ocr_user_network"
+                network_dir.mkdir(parents=True, exist_ok=True)
+
+                self._reader = easyocr.Reader(
+                    ["en"],
+                    gpu=False,
+                    model_storage_directory=str(models_dir),
+                    user_network_directory=str(network_dir),
+                    verbose=False
+                )
                 self._ready = True
                 self._init_error = ""
-            print("[OCREngine] EasyOCR reader initialized successfully ✓")
+            print(f"[OCREngine] EasyOCR reader initialized successfully from {models_dir} ✓")
             if self._on_ready:
                 self._on_ready(True, "EasyOCR initialized")
         except Exception as e:
@@ -1621,34 +1639,6 @@ Formatting in Notion:
 Your task is to turn these lecture slides into notes that read as if the user wrote them: lean, in their own words, built for revision rather than completeness.
 
 {style_guide_section}
-{style_guide if style_guide else '''
-Page layout:
-## 🎯 Learning Objectives
-(the slide's objectives, copied verbatim)
-
-## 📝 Notes
-(everything else)
-
-Two modes, chosen by content:
-- Mechanisms, pathways, sequences of steps become plain bullets that stay close to the slide's own wording, one step per bullet.
-- Concepts and comparisons become short paragraphs in plain, slightly informal English, explaining cause and effect.
-
-Explain the why: Where a slide states a result, add 1-2 sentences that make it make sense. Put this in the user's voice without marking it as an addition.
-Explain complex words and phrases in brackets: Whenever you use or encounter complex, obscure, or hard-to-understand medical, biochemical, anatomical, or pharmacological words or phrases, provide a brief description ~1 to 2 sentences long in brackets (...) right after the term explaining what it means in plain English.
-Describe diagrams in words: When a slide's point is a diagram, narrate what happens step by step in a paragraph. If you cannot read it or to anchor visual revision, output a diagram reference on its own line:
-(slide N: what the diagram shows)
-followed by user revision caption ("what to notice, what to ignore, what to memorize").
-Crucial: Always write single slide numbers per reference line, e.g. (slide 3: ...) and on next line (slide 4: ...), never group multiple slides like (slide 3 and 4: ...).
-Memory hooks: 1-2 per lecture (analogy, one-line rule, nickname in italics).
-What to leave out: drop worked numerical examples, data tables, pure-recall strings, historical names/dates, derivations, context/title slides.
-Formatting in Notion:
-- Blank line between every block: heading, paragraph, bullet list, screenshot marker, caption.
-- Before each major block (<b><u>...</u></b>), add an empty paragraph, written <p /> on its own line with a blank line either side.
-- Topic headings inside Notes are underlined plain text (<u>Topic:</u>), not ## headings.
-- Plain text formulas: V0 = Vmax[S] / Km + [S].
-'''}
-
-{ref_examples_block}
 
 Lecture Title: "{lecture_name}"
 Total Slides: {total_slides_count}
@@ -1753,13 +1743,23 @@ class NotionSyncEngine:
             except Exception:
                 pass
 
-        # 1. Clean filename & strip student / handout suffixes
+        # 1. Clean filename & strip academic metadata, year prefixes, answer tags, and suffixes
         clean_q = re.sub(r'(\.pptx|\.pdf)$', '', query, flags=re.IGNORECASE).strip()
+
+        # Remove academic years e.g. 2024, 2025, 2026, 26_27, 26-27, 2026-27
+        clean_no_year = re.sub(r'\b(20\d\d|19\d\d|\d{2}[-_]\d{2}|\d{4}[-_]\d{2,4})\b', '', clean_q).strip(' _-')
+
+        # Remove common student tags, answer tags, platform tags, tutorial tags
         clean_topic = re.sub(
-            r'([-_ ]*(student[s]?([-_ ]*slides?)?|slides?|handout|annotated|printable|notes|final|v\d+)\b|\([^\)]*student[^\)]*\))',
-            '', clean_q, flags=re.IGNORECASE
+            r'([-_ ]*(student[s]?([-_ ]*slides?)?|slides?|handout|annotated|printable|notes|final|v\d+'
+            r'|with(out)?[-_ ]*answers?|no[-_ ]*answers?|keats|tutorial|workshop|cbd|case[-_ ]*based[-_ ]*discussion)\b|\([^\)]*\))',
+            '', clean_no_year, flags=re.IGNORECASE
         ).strip(' _-')
-        topic_no_num = re.sub(r'^(lecture[-_ ]*\d+[-_ ]*|\d+[-_ .]+)', '', clean_topic, flags=re.IGNORECASE).strip(' _-')
+
+        # Strip lecture prefixes e.g. "Lecture 05", "05.", "MCB-10", "ACRS03L"
+        topic_no_num = re.sub(r'^(lecture[-_ ]*\d+[-_ ]*|\d+[-_ .]+|[A-Z]{2,5}[-_ ]*\d{1,3}[A-Z]?[-_ .]*)', '', clean_topic, flags=re.IGNORECASE).strip(' _-')
+        if not topic_no_num:
+            topic_no_num = clean_topic
 
         # Detect block from query, pptx_path, or target_deck
         detected_block = ""
@@ -1813,12 +1813,23 @@ class NotionSyncEngine:
         def _norm(s: str) -> str:
             return re.sub(r'[^a-z0-9 ]+', ' ', s.lower()).strip()
 
-        stop_words = {'the', 'and', 'to', 'of', 'in', 'for', 'a', 'an', 'on', 'with', 'student', 'slides', 'lecture', 'presentation', 'session', 'part'}
+        stop_words = {
+            'the', 'and', 'to', 'of', 'in', 'for', 'a', 'an', 'on', 'with', 'without',
+            'answers', 'answer', 'student', 'slides', 'lecture', 'presentation', 'session',
+            'part', 'keats', 'tutorial', 'workshop', 'cbd', 'case', 'discussion', 'notes',
+            'intro', 'introduction', 'final', 'v1', 'v2'
+        }
         core_query_words = [w for w in _norm(clean_topic).split() if w not in stop_words and len(w) > 1]
         if not core_query_words and topic_no_num:
             core_query_words = [w for w in _norm(topic_no_num).split() if w not in stop_words and len(w) > 1]
         if not core_query_words and slide1_title:
             core_query_words = [w for w in _norm(slide1_title).split() if w not in stop_words and len(w) > 1]
+
+        GENERIC_MEDICAL_CATEGORIES = {
+            'metabolism', 'physiology', 'anatomy', 'histology', 'pathology', 'pharmacology',
+            'system', 'systems', 'introduction', 'intro', 'overview', 'principles', 'foundations',
+            'basis', 'structure', 'function', 'tutorial', 'session', 'lecture', 'revision', 'summary'
+        }
 
         # 2. Query Notion API
         seen_pages: dict[str, dict] = {}
@@ -1876,6 +1887,10 @@ class NotionSyncEngine:
         # 3. Score every candidate page
         code_clean = re.sub(r'[^A-Z0-9]', '', code_str) if code_str else ''
         q_norm = _norm(clean_q)
+        clean_topic_norm = _norm(clean_topic)
+        topic_no_num_norm = _norm(topic_no_num)
+
+        specific_query_words = [w for w in core_query_words if w not in GENERIC_MEDICAL_CATEGORIES and len(w) >= 3]
 
         scored_candidates = []
         for page_id, r in seen_pages.items():
@@ -1909,11 +1924,13 @@ class NotionSyncEngine:
             overlap_ratio = (matched_words / len(core_query_words)) if core_query_words else 0.0
             score = overlap_ratio * 0.60
 
-            # Substring match
-            if _norm(clean_topic) in title_norm:
+            # Substring match (bidirectional)
+            if clean_topic_norm and (clean_topic_norm in title_norm or (len(title_norm) >= 5 and title_norm in clean_topic_norm)):
+                score += 0.50
+            elif topic_no_num_norm and (topic_no_num_norm in title_norm or (len(title_norm) >= 5 and title_norm in topic_no_num_norm)):
                 score += 0.40
-            elif topic_no_num and _norm(topic_no_num) in title_norm:
-                score += 0.30
+            elif slide1_title and (_norm(slide1_title) in title_norm or (len(title_norm) >= 5 and title_norm in _norm(slide1_title))):
+                score += 0.35
 
             # Block match
             if detected_block and detected_block.lower() in title_norm:
@@ -1927,6 +1944,20 @@ class NotionSyncEngine:
                     score -= 0.80  # Direct code conflict (e.g. ACRS07L vs ACRS02L / ACRS03L)
             elif code_clean and code_clean.lower() in title_norm:
                 score += 0.40
+
+            # Distinguishing medical topic check:
+            # If the lecture has specific distinguishing terms (e.g. 'anaerobic') but candidate matches NONE of them,
+            # heavy penalty to avoid matching unrelated lectures that only share generic words like 'metabolism'.
+            if specific_query_words:
+                has_specific_match = any((sqw in title_words or any(sqw in tw for tw in title_words if len(tw) >= 4)) for sqw in specific_query_words)
+                if not has_specific_match:
+                    score -= 0.70
+
+            # Penalize prominent contradictory specific topic keywords present in candidate but absent in query
+            specific_title_words = [w for w in title_words if w not in GENERIC_MEDICAL_CATEGORIES and len(w) >= 3]
+            contradictory_words = [tw for tw in specific_title_words if tw not in core_query_words and not any(tw in qw for qw in core_query_words)]
+            if specific_query_words and not any(sqw in title_words for sqw in specific_query_words) and contradictory_words:
+                score -= 0.35 * min(len(contradictory_words), 2)
 
             # Organ system mutual exclusivity (prevent Respiratory matching Cardiovascular)
             if ('respiratory' in q_norm or 'respiration' in q_norm) and 'cardiovascular' in title_norm and 'respiratory' not in title_norm:
@@ -1947,7 +1978,7 @@ class NotionSyncEngine:
                 else:
                     score -= 0.25
 
-            if score >= 0.35:
+            if score >= 0.45:
                 scored_candidates.append({
                     "id": page_id,
                     "title": title,
@@ -4774,11 +4805,22 @@ class AppAPI:
                 ]):
                     continue
 
+                dup_options = {
+                    "allowDuplicate": True,
+                    "duplicateScope": "deck",
+                    "duplicateScopeOptions": {
+                        "deckName": target_deck,
+                        "checkChildren": False,
+                        "checkAllModels": False
+                    }
+                }
+
                 if ctype in ("Cloze++", "Cloze"):
                     notes_payload.append({
                         "deckName": target_deck,
                         "modelName": "Cloze++",
                         "fields": {"Text": front, "Back Extra": back},
+                        "options": dup_options,
                         "tags": ["MBBS", "LectureCards"]
                     })
                 else:
@@ -4786,6 +4828,7 @@ class AppAPI:
                         "deckName": target_deck,
                         "modelName": "1. Basic",
                         "fields": {"Front": front, "Back": back},
+                        "options": dup_options,
                         "tags": ["MBBS", "LectureCards"]
                     })
 
@@ -4815,15 +4858,38 @@ class AppAPI:
                         "Back Extra": occ.get("back_extra", ""),
                         "Comments": "",
                     },
+                    "options": {
+                        "allowDuplicate": True,
+                        "duplicateScope": "deck"
+                    },
                     "tags": ["MBBS", "ImageOcclusion", f"Slide{occ.get('slide', 1)}"]
                 })
 
+            if not notes_payload:
+                return {"success": False, "error": "No valid cards to push."}
+
             res = AnkiBridge.add_notes(notes_payload)
             if res.get("success"):
+                results = res.get("result") or []
+                created_count = sum(1 for nid in results if nid is not None)
                 AnkiBridge.sync()
-                return {"success": True, "count": len(notes_payload), "deck": target_deck}
+                return {"success": True, "count": created_count or len(notes_payload), "deck": target_deck}
+
+            # Fallback: Push note-by-note so a single duplicate/problem note never blocks the entire batch
+            added_count = 0
+            last_err = res.get("error", "Unknown AnkiConnect error")
+            for note in notes_payload:
+                single_res = AnkiBridge.invoke("addNote", note=note)
+                if single_res.get("success") and single_res.get("result"):
+                    added_count += 1
+                else:
+                    last_err = single_res.get("error", last_err)
+
+            if added_count > 0:
+                AnkiBridge.sync()
+                return {"success": True, "count": added_count, "deck": target_deck}
             else:
-                return {"success": False, "error": res.get("error", "Unknown AnkiConnect error")}
+                return {"success": False, "error": last_err}
         except Exception as exc:
             return {"success": False, "error": str(exc)}
 
