@@ -1,6 +1,8 @@
 <div align="center">
-  <img src="https://github.com/user-attachments/assets/8a8f865f-22e5-4f8c-b1d6-3bd4941333d7" alt="Synapse Icon" width="88" />
-  <h1>Synapse</h1>
+  <h1>
+    <img src="https://github.com/user-attachments/assets/8a8f865f-22e5-4f8c-b1d6-3bd4941333d7" alt="Synapse Icon" width="38" style="vertical-align: middle;" />
+    Synapse
+  </h1>
   <p><strong>MBBS AI Studio & SBA Question Bank for King's College London</strong></p>
   <p>Convert KCL lecture slides into Image Occlusion Anki cards, structured Notion notes, AI-tutored Q&A, and synced SBA practice—all in one native macOS app.</p>
 
@@ -27,27 +29,27 @@
 
 ## Key Features
 
-- **Native Image Occlusion & OCR:** Load `.pptx` lectures, auto-detect anatomical and histological labels with local OCR, customize masks, and push directly to Anki via AnkiConnect or export `.apkg` decks[span_3](start_span)[span_3](end_span).
-- **Automated Notion & Study Notes:** Synthesize full lecture decks into structured, high-yield study notes tailored to KCL MBBS learning outcomes[span_4](start_span)[span_4](end_span).
-- **Lecture-Grounded AI Tutor:** Ask questions scoped to the current slide, the active lecture, or your entire OneDrive KCL lecture library[span_5](start_span)[span_5](end_span).
-- **Integrated KCL SBA Question Bank:** Practice single-best-answer questions inside the app with automatic cross-device progress syncing[span_6](start_span)[span_6](end_span).
-- **Built-in Update Checker:** Automatically notifies you inside the app whenever a new version is released[span_7](start_span)[span_7](end_span).
+- **Native Image Occlusion & OCR:** Load `.pptx` lectures, auto-detect anatomical and histological labels with local OCR, customize masks, and push directly to Anki via AnkiConnect or export `.apkg` decks.
+- **Automated Notion & Study Notes:** Synthesize full lecture decks into structured, high-yield study notes tailored to KCL MBBS learning outcomes.
+- **Lecture-Grounded AI Tutor:** Ask questions scoped to the current slide, the active lecture, or your entire OneDrive KCL lecture library.
+- **Integrated KCL SBA Question Bank:** Practice single-best-answer questions inside the app with automatic cross-device progress syncing.
+- **Built-in Update Checker:** Automatically notifies you inside the app whenever a new version is released.
 
 ---
 
 ## Installation (macOS Apple Silicon)
 
-1. Download **`Synapse.dmg`** using the button above (or from [Releases](https://github.com/Sreerahul123/synapse/releases/latest))[span_8](start_span)[span_8](end_span).
-2. Open `Synapse.dmg` and drag **Synapse** into your **Applications** folder[span_9](start_span)[span_9](end_span).
-3. **First-time launch only:** Because Synapse is independently distributed outside the Mac App Store, macOS Gatekeeper will ask for confirmation the first time you open it[span_10](start_span)[span_10](end_span):
-   - Open **Applications**, **Right-click (or Control-click) Synapse**, and select **Open → Open**[span_11](start_span)[span_11](end_span).
-   - *(Alternatively, run `xattr -cr /Applications/Synapse.app` in Terminal.)*[span_12](start_span)[span_12](end_span)
-4. Complete the 3-step **Welcome to Synapse** setup wizard with your invite account, KCL OneDrive folder, and free Google AI Studio API keys[span_13](start_span)[span_13](end_span).
+1. Download **`Synapse.dmg`** using the button above (or from [Releases](https://github.com/Sreerahul123/synapse/releases/latest)).
+2. Open `Synapse.dmg` and drag **Synapse** into your **Applications** folder.
+3. **First-time launch only:** Because Synapse is independently distributed outside the Mac App Store, macOS Gatekeeper will ask for confirmation the first time you open it:
+   - Open **Applications**, **Right-click (or Control-click) Synapse**, and select **Open → Open**.
+   - *(Alternatively, run `xattr -cr /Applications/Synapse.app` in Terminal.)*
+4. Complete the 3-step **Welcome to Synapse** setup wizard with your invite account, KCL OneDrive folder, and free Google AI Studio API keys.
 
 ---
 
 ## Requirements
 
-- **Mac:** Apple Silicon (M1 or newer) running macOS 13+[span_14](start_span)[span_14](end_span)
-- **Anki Integration:** [Anki Desktop](https://apps.ankiweb.net/) running with the **AnkiConnect** add-on (`2055492159`) installed[span_15](start_span)[span_15](end_span)
-- **AI Features:** Free API keys from [Google AI Studio](https://aistudio.google.com/apikey)[span_16](start_span)[span_16](end_span)
+- **Mac:** Apple Silicon (M1 or newer) running macOS 13+
+- **Anki Integration:** [Anki Desktop](https://apps.ankiweb.net/) running with the **AnkiConnect** add-on (`2055492159`) installed
+- **AI Features:** Free API keys from [Google AI Studio](https://aistudio.google.com/apikey)
