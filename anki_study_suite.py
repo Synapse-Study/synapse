@@ -1721,27 +1721,109 @@ class NotionSyncEngine:
             "Notion-Version": "2022-06-28"
         }
 
+    @staticmethod
+    def _extract_page_title(page_data: dict) -> str:
+        props = page_data.get("properties", {})
+        for p in props.values():
+            if isinstance(p, dict) and p.get("type") == "title":
+                parts = p.get("title", [])
+                if parts:
+                    return "".join(part.get("plain_text", "") for part in parts).strip()
+        if "title" in props and isinstance(props["title"], list):
+            return "".join(part.get("plain_text", "") for part in props["title"]).strip()
+        return ""
+
+    def search_all_notion_pages(self, query: str = "", limit: int = 25) -> list[dict]:
+        headers = self._get_headers()
+        seen: dict[str, dict] = {}
+
+        # 1. Database query if database ID configured
+        db_id = self._config.get("NOTION_PAGE_ID", "").strip()
+        if db_id:
+            clean_db_id = db_id.replace("-", "")
+            try:
+                db_payload = {"page_size": min(limit * 2, 100)}
+                db_res = requests.post(
+                    f"https://api.notion.com/v1/databases/{clean_db_id}/query",
+                    headers={**headers, "Content-Type": "application/json"},
+                    json=db_payload,
+                    timeout=15
+                )
+                if db_res.status_code == 200:
+                    for r in db_res.json().get("results", []):
+                        if r.get("object") == "page":
+                            pid = r.get("id")
+                            title = self._extract_page_title(r)
+                            if pid and title:
+                                seen[pid] = {"id": pid, "title": title, "url": r.get("url", "")}
+            except Exception:
+                pass
+
+        # 2. Workspace search
+        try:
+            search_payload: dict = {
+                "filter": {"value": "page", "property": "object"},
+                "page_size": min(limit * 2, 100)
+            }
+            if query and query.strip():
+                search_payload["query"] = query.strip()
+            res = requests.post(
+                "https://api.notion.com/v1/search",
+                headers={**headers, "Content-Type": "application/json"},
+                json=search_payload,
+                timeout=15
+            )
+            if res.status_code == 200:
+                for r in res.json().get("results", []):
+                    if r.get("object") == "page":
+                        pid = r.get("id")
+                        title = self._extract_page_title(r)
+                        if pid and title:
+                            seen[pid] = {"id": pid, "title": title, "url": r.get("url", "")}
+        except Exception:
+            pass
+
+        results = list(seen.values())
+        if query and query.strip():
+            q_clean = query.strip().lower()
+            def _rank(item):
+                t_lower = item["title"].lower()
+                if t_lower == q_clean:
+                    return 0
+                if t_lower.startswith(q_clean):
+                    return 1
+                if q_clean in t_lower:
+                    return 2
+                q_words = [w for w in q_clean.split() if len(w) > 1]
+                matches = sum(1 for w in q_words if w in t_lower)
+                return 10 - matches
+
+            filtered = [
+                it for it in results
+                if q_clean in it["title"].lower() or any(w in it["title"].lower() for w in q_clean.split() if len(w) > 2)
+            ]
+            filtered.sort(key=_rank)
+            return filtered[:limit]
+
+        return results[:limit]
+
     def search_session_page(self, query: str, target_page_id: str = "") -> Optional[dict]:
         headers = self._get_headers()
 
         # If an explicit page ID is supplied, fetch it directly
         if target_page_id:
+            target_clean = target_page_id.strip()
             try:
-                res = requests.get(f"https://api.notion.com/v1/pages/{target_page_id.strip()}", headers=headers, timeout=15)
+                res = requests.get(f"https://api.notion.com/v1/pages/{target_clean}", headers=headers, timeout=15)
                 if res.status_code == 200:
                     data = res.json()
-                    title = ""
-                    for p in data.get("properties", {}).values():
-                        if p.get("type") == "title":
-                            parts = p.get("title", [])
-                            if parts:
-                                title = "".join(part.get("plain_text", "") for part in parts).strip()
-                            break
-                    blk_res = requests.get(f"https://api.notion.com/v1/blocks/{target_page_id}/children?page_size=5", headers=headers, timeout=10)
+                    title = self._extract_page_title(data)
+                    blk_res = requests.get(f"https://api.notion.com/v1/blocks/{target_clean}/children?page_size=5", headers=headers, timeout=10)
                     has_content = len(blk_res.json().get("results", [])) > 0 if blk_res.status_code == 200 else False
-                    return {"id": target_page_id, "title": title or "Notion Page", "has_content": has_content, "score": 1.0}
+                    return {"id": target_clean, "title": title or "Notion Page", "has_content": has_content, "score": 1.0, "candidates": []}
             except Exception:
                 pass
+            return {"id": target_clean, "title": "Selected Notion Page", "has_content": True, "score": 1.0, "candidates": []}
 
         # 1. Clean filename & strip academic metadata, year prefixes, answer tags, and suffixes
         clean_q = re.sub(r'(\.pptx|\.pdf)$', '', query, flags=re.IGNORECASE).strip()
@@ -1894,15 +1976,7 @@ class NotionSyncEngine:
 
         scored_candidates = []
         for page_id, r in seen_pages.items():
-            props = r.get("properties", {})
-            title = ""
-            for p in props.values():
-                if p.get("type") == "title":
-                    parts = p.get("title", [])
-                    if parts:
-                        title = "".join(part.get("plain_text", "") for part in parts).strip()
-                    break
-
+            title = self._extract_page_title(r)
             if not title:
                 continue
 
@@ -2007,7 +2081,11 @@ class NotionSyncEngine:
             "id": best["id"],
             "title": best["title"],
             "has_content": has_content,
-            "score": best["score"]
+            "score": best["score"],
+            "candidates": [
+                {"id": c["id"], "title": c["title"], "score": round(c["score"], 2)}
+                for c in scored_candidates[:10]
+            ]
         }
 
     def upload_image(self, img_bytes: bytes, filename: str) -> str:
@@ -5130,6 +5208,44 @@ class AppAPI:
                 self.state.presentation,
                 target_page_id=target_page_id
             )
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
+
+    def detect_notion_target_page(self) -> dict:
+        lec_name = self.state.current_lecture_name or (self.state.pptx_path.stem if self.state.pptx_path else "")
+        if not lec_name:
+            return {"success": False, "error": "No active lecture selected. Please open a presentation first."}
+        try:
+            match = self._notion_engine.search_session_page(lec_name)
+            if not match:
+                # Fetch candidate pages to let user choose
+                fallback = self._notion_engine.search_all_notion_pages(query=lec_name, limit=10)
+                return {
+                    "success": True,
+                    "lecture_name": lec_name,
+                    "found": False,
+                    "target": None,
+                    "candidates": fallback
+                }
+            return {
+                "success": True,
+                "lecture_name": lec_name,
+                "found": True,
+                "target": {
+                    "id": match["id"],
+                    "title": match["title"],
+                    "score": round(match.get("score", 1.0), 2),
+                    "has_content": match.get("has_content", False)
+                },
+                "candidates": match.get("candidates", [])
+            }
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
+
+    def search_notion_pages(self, query: str = "") -> dict:
+        try:
+            pages = self._notion_engine.search_all_notion_pages(query=query)
+            return {"success": True, "pages": pages}
         except Exception as exc:
             return {"success": False, "error": str(exc)}
 
