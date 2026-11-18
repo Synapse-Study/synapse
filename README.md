@@ -37,7 +37,7 @@
 
 ---
 
-## Installation (macOS Apple Silicon — M1 / M2 / M3 / M4)
+## Installation (macOS Apple Silicon)
 
 1. Download **`Synapse.dmg`** using the button above (or from [Releases](https://github.com/Synapse-Study/synapse/releases/latest)).
 2. Open `Synapse.dmg` and drag **Synapse** into your **Applications** folder.
