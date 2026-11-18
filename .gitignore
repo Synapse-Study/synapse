@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+
+# Virtual Environment
+.venv/
+venv/
+env/
+
+# Synapse User & Local Runtime Data
+config.json
+*.db
+kcl_lectures_cache.db
+slide_cache/
+anki_exports/
+templates/
+Synapse.app/
+Synapse.spec
+.easyocr_models/
+*.dmg
+
+# macOS System Files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+
+# Cloud Storage & Symlinks
+Lectures_OneDrive
+Lectures_OneDrive/
