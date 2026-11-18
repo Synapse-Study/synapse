@@ -7,6 +7,10 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT_DIR"
 
+# Direct PyInstaller cache to workspace directory
+export PYINSTALLER_CONFIG_DIR="$ROOT_DIR/build/pyinstaller_config"
+mkdir -p "$PYINSTALLER_CONFIG_DIR"
+
 echo "=================================================="
 echo " Starting Synapse Build (macOS .app + .dmg)"
 echo " Project Directory: $ROOT_DIR"
@@ -69,6 +73,7 @@ echo "Building dist/Synapse.app with PyInstaller..."
     --clean \
     --windowed \
     --name "Synapse" \
+    --osx-bundle-identifier "com.synapse.app" \
     "${ICON_ARGS[@]}" \
     "${TV_ARGS[@]}" \
     --add-data "gui:gui" \
@@ -113,14 +118,60 @@ if [ ! -d "dist/Synapse.app" ]; then
 fi
 echo "Successfully created dist/Synapse.app"
 
-# 9. Package dist/Synapse.dmg using macOS hdiutil
+# 8.1 Re-sign app bundle ad-hoc to fix code signatures invalidated by post-build copies
+echo "Signing dist/Synapse.app bundle ad-hoc..."
+codesign --force --deep --sign - "dist/Synapse.app"
+codesign -vvv --deep --strict "dist/Synapse.app"
+
+# 9. Package dist/Synapse.dmg with proper Drag-to-Applications layout
+echo "Preparing DMG staging layout..."
+DMG_STAGING="dist/dmg_staging"
+rm -rf "$DMG_STAGING"
+mkdir -p "$DMG_STAGING"
+
+# Copy the signed application
+cp -R "dist/Synapse.app" "$DMG_STAGING/"
+
+# Add Applications symlink for standard drag-and-drop install
+ln -s /Applications "$DMG_STAGING/Applications"
+
+# Add a one-click helper script that installs to /Applications and clears Gatekeeper quarantine
+cat << 'EOF' > "$DMG_STAGING/Install & Launch Synapse.command"
+#!/usr/bin/env bash
+set -e
+DIR="$(cd "$(dirname "$0")" && pwd)"
+echo "=================================================="
+echo " Installing Synapse to /Applications..."
+echo "=================================================="
+if [ -d "/Applications/Synapse.app" ]; then
+    echo "Removing previous version from /Applications..."
+    rm -rf "/Applications/Synapse.app"
+fi
+cp -R "$DIR/Synapse.app" /Applications/
+echo "Clearing macOS download quarantine flags..."
+xattr -cr /Applications/Synapse.app 2>/dev/null || true
+echo "=================================================="
+echo " Installation complete! Launching Synapse..."
+echo "=================================================="
+open /Applications/Synapse.app
+exit 0
+EOF
+chmod +x "$DMG_STAGING/Install & Launch Synapse.command"
+
 echo "Packaging dist/Synapse.dmg with hdiutil..."
+rm -f "dist/Synapse.dmg"
 hdiutil create \
     -volname "Synapse" \
-    -srcfolder "dist/Synapse.app" \
+    -srcfolder "$DMG_STAGING" \
     -ov \
     -format UDZO \
     "dist/Synapse.dmg"
+
+rm -rf "$DMG_STAGING"
+
+# Sign the DMG container ad-hoc
+echo "Signing dist/Synapse.dmg..."
+codesign --force --sign - "dist/Synapse.dmg" 2>/dev/null || true
 
 echo "=================================================="
 echo " Synapse Build Complete!"
