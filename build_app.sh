@@ -119,6 +119,9 @@ if [ ! -d "dist/Synapse.app" ]; then
 fi
 echo "Successfully created dist/Synapse.app"
 
+# Clean any .DS_Store files from app bundle before signing
+find "dist/Synapse.app" -name ".DS_Store" -delete 2>/dev/null || true
+
 # 8.1 Re-sign app bundle ad-hoc to fix code signatures invalidated by post-build copies
 echo "Signing dist/Synapse.app bundle ad-hoc..."
 codesign --force --deep --sign - "dist/Synapse.app"
@@ -158,6 +161,8 @@ open /Applications/Synapse.app
 exit 0
 EOF
 chmod +x "$DMG_STAGING/Install & Launch Synapse.command"
+
+find "$DMG_STAGING" -name ".DS_Store" -delete 2>/dev/null || true
 
 echo "Packaging dist/Synapse.dmg with hdiutil..."
 rm -f "dist/Synapse.dmg"

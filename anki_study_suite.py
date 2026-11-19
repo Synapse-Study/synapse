@@ -40,11 +40,12 @@ import re
 import uuid
 import base64
 import time
+import shutil
 import sqlite3
 import webbrowser
 import urllib.request
 import urllib.error
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, Any
 
@@ -106,7 +107,7 @@ _C_EXTENSION_LOCK = threading.Lock()
 # ─────────────────────────────────────────────────────────────────────────────
 # 1. CONSTANTS, PATHS & DEFAULTS
 # ─────────────────────────────────────────────────────────────────────────────
-CURRENT_VERSION = "2.1.0"
+CURRENT_VERSION = "2.2.0"
 GITHUB_REPO = "Synapse-Study/synapse"
 LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 
@@ -117,7 +118,7 @@ else:
 BASE_DIR = BUNDLE_DIR
 
 def parse_version_tuple(v_str: str) -> tuple[int, ...]:
-    """Parse version string like '2.1.0' or 'v2.1.0' into numeric tuple (2, 1, 0)."""
+    """Parse version string like '2.2.0' or 'v2.2.0' into numeric tuple (2, 2, 0)."""
     nums = [int(x) for x in re.findall(r'\d+', str(v_str or ""))]
     while len(nums) < 3:
         nums.append(0)
@@ -176,6 +177,7 @@ LECTURES_CACHE_DB_PATH = APP_DATA_DIR / "kcl_lectures_cache.db"
 EXPORTS_DIR = APP_DATA_DIR / "anki_exports"
 SLIDE_CACHE_DIR = APP_DATA_DIR / "slide_cache"
 TEMPLATES_DIR = APP_DATA_DIR / "templates"
+SAVED_NOTES_DIR = APP_DATA_DIR / "saved_notes"
 CACHE_DIR = SLIDE_CACHE_DIR
 
 def _ensure_app_data_dirs() -> None:
@@ -185,6 +187,7 @@ def _ensure_app_data_dirs() -> None:
         EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
         SLIDE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
         TEMPLATES_DIR.mkdir(parents=True, exist_ok=True)
+        SAVED_NOTES_DIR.mkdir(parents=True, exist_ok=True)
     except Exception:
         pass
 
@@ -254,9 +257,14 @@ _CONFIG_TEMPLATE: dict = {
     "SUPABASE_ACCESS_TOKEN":    "",
     "SUPABASE_REFRESH_TOKEN":   "",
     "ONBOARDING_COMPLETE":      False,
+    "USER_NAME":                "",
+    "TIMETABLE_URL":            "",
+    "APP_ACCENT":               "cobalt",
+    "AUTO_PREPARE_NOTES":       True,
     "NOTES_STYLE_MODE":         "default",
     "CUSTOM_STYLE_INSTRUCTIONS": "",
     "CUSTOM_NOTE_TEMPLATES":     [],
+    "DISCORD_FEEDBACK_WEBHOOK":  "https://discord.com/api/webhooks/1572979254625312929/3exv62rYExNtpoibQPrCCFOMkzipWFpRI5pZDzyyoprQbgNdTI3uP1M6nlH3DIKQf85K",
 }
 
 _ENV_FALLBACKS: dict = {
@@ -267,6 +275,7 @@ _ENV_FALLBACKS: dict = {
     "NOTION_PAGE_ID":       "NOTION_PAGE_ID",
     "TARGET_DECK":          "TARGET_DECK",
     "ANKI_URL":             "ANKI_URL",
+    "DISCORD_FEEDBACK_WEBHOOK": "DISCORD_FEEDBACK_WEBHOOK",
 }
 
 def mask_api_key(key: str) -> str:
@@ -1162,7 +1171,8 @@ class GeminiCardsEngine:
         timeout: int = 120,
         status_callback: Optional[Any] = None,
         preferred_model: Optional[str] = None,
-        task_label: str = "Notes"
+        task_label: str = "Notes",
+        restrict_to_flagship: bool = False
     ) -> str:
         api_key = self._config.get_notes_api_key()
         if not api_key:
@@ -1171,47 +1181,57 @@ class GeminiCardsEngine:
         configured_model = (self._config.get("GEMINI_MODEL", "gemini-4-hydrogen") or "gemini-4-hydrogen").strip()
         model = (preferred_model or configured_model).strip()
         masked = mask_api_key(api_key)
-        print(f"[Gemini {task_label}] Request initiated | Key: Notes Key ({masked}) | Target Model: {model}")
+        print(f"[Gemini {task_label}] Request initiated | Key: Notes Key ({masked}) | Target Model: {model} | Flagship Only: {restrict_to_flagship}")
+        
+        gen_config = {"temperature": 0.2, "maxOutputTokens": 8192}
+        if restrict_to_flagship:
+            gen_config["thinkingConfig"] = {"thinkingBudget": 2048}
+
         payload = {
             "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {"temperature": 0.2, "maxOutputTokens": 8192}
+            "generationConfig": gen_config
         }
 
         # Task-calibrated fallback cascade:
-        # Notes synthesis prioritizes 4-hydrogen (deep reasoning), then 3.8-flash, then other models.
-        # Card creation prioritizes 3-flash-preview & 3.5-flash-lite (protecting the 20 RPD cap across 20-30 slides/lecture).
-        if preferred_model == "gemini-3-flash-preview":
+        # Notes synthesis strictly restricts to flagship models (gemini-4-hydrogen & gemini-3.8-flash) with thinking_level="medium".
+        # It never downgrades to gemini-3.5-flash-lite on 503 errors.
+        if restrict_to_flagship:
+            cascade = [
+                "gemini-4-hydrogen",
+                "gemini-3.8-flash",
+            ]
+        elif preferred_model == "gemini-3-flash-preview":
             cascade = [
                 "gemini-3-flash-preview",
                 "gemini-3.5-flash-lite",
+                "gemini-3.5-flash",
                 "gemini-flash-lite-latest",
             ]
         elif preferred_model == "gemini-4-hydrogen":
             cascade = [
                 "gemini-4-hydrogen",
                 "gemini-3.8-flash",
-                "gemini-3-flash-preview",
-                "gemini-3.5-flash",
                 "gemini-3.5-flash-lite",
+                "gemini-3.5-flash",
                 "gemini-flash-lite-latest",
+                "gemini-3-flash-preview",
             ]
         elif preferred_model == "gemini-3.8-flash":
             cascade = [
                 "gemini-3.8-flash",
-                "gemini-3-flash-preview",
-                "gemini-3.5-flash",
                 "gemini-3.5-flash-lite",
+                "gemini-3.5-flash",
                 "gemini-flash-lite-latest",
+                "gemini-3-flash-preview",
             ]
         else:
             cascade = [
                 model,
-                "gemini-4-hydrogen",
-                "gemini-3.8-flash",
-                "gemini-3-flash-preview",
-                "gemini-3.5-flash",
                 "gemini-3.5-flash-lite",
+                "gemini-3.5-flash",
+                "gemini-3.8-flash",
                 "gemini-flash-lite-latest",
+                "gemini-3-flash-preview",
             ]
         models_to_try = []
         for m in cascade:
@@ -1219,19 +1239,23 @@ class GeminiCardsEngine:
                 models_to_try.append(m)
 
         last_error = ""
-        backoff_delays = [3.0, 6.0, 10.0, 15.0, 20.0]
+        backoff_delays = [2.0, 4.0, 8.0]
+        call_timeout = min(timeout, 50)
 
         for idx, attempt_model in enumerate(models_to_try):
             is_primary = (idx == 0)
-            max_retries = len(backoff_delays) if is_primary else 2
+            max_retries = 2 if is_primary else 1
 
             if status_callback:
                 status_callback(f"Connecting with Notes Key ({masked}) to {attempt_model}...", model=attempt_model)
 
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{attempt_model}:generateContent?key={api_key}"
             for retry in range(max_retries):
+                if getattr(self, "_cancel_requested", False):
+                    raise InterruptedError("Generation cancelled by user.")
+
                 try:
-                    res = requests.post(url, json=payload, timeout=timeout)
+                    res = requests.post(url, json=payload, timeout=call_timeout)
                     if res.status_code == 200:
                         data = res.json()
                         try:
@@ -1251,7 +1275,7 @@ class GeminiCardsEngine:
                                     "generationConfig": {"temperature": 0.2, "maxOutputTokens": 8192}
                                 }
                                 try:
-                                    cont_res = requests.post(url, json=cont_payload, timeout=timeout)
+                                    cont_res = requests.post(url, json=cont_payload, timeout=call_timeout)
                                     if cont_res.status_code == 200:
                                         cont_data = cont_res.json()
                                         cont_parts = cont_data.get("candidates", [{}])[0].get("content", {}).get("parts", [])
@@ -1273,12 +1297,33 @@ class GeminiCardsEngine:
                             raise ValueError(f"Malformed Gemini response ({attempt_model}): {e} | data={data}")
                     elif res.status_code == 503:
                         last_error = f"Gemini Error 503 ({attempt_model}): {res.text}"
-                        wait_time = backoff_delays[min(retry, len(backoff_delays) - 1)]
-                        msg = f"{attempt_model} is experiencing high demand (503). Patiently holding reasoning slot (attempt {retry + 1}/{max_retries}, waiting {int(wait_time)}s) [Notes Key: {masked}]..."
+                        if restrict_to_flagship:
+                            # Flagship restricted: NEVER downgrade to flash-lite! Cycle between 4-hydrogen & 3.8-flash
+                            alt_idx = (idx + 1) % len(models_to_try)
+                            next_model = models_to_try[alt_idx]
+                            msg = f"⚠️ {attempt_model} flagship slot busy (503). Retrying with {next_model}..."
+                            print(f"[Gemini Notes] {msg}")
+                            if status_callback:
+                                status_callback(msg, model=next_model)
+                            time.sleep(3.0)
+                            continue
+                        # If model is overloaded on Google's servers, fail over immediately to next available model
+                        if not is_primary or retry >= 1:
+                            next_model = models_to_try[idx + 1] if idx + 1 < len(models_to_try) else "next candidate"
+                            msg = f"⚠️ {attempt_model} is experiencing high demand (503). Switching immediately to {next_model}..."
+                            print(f"[Gemini Notes] {msg}")
+                            if status_callback:
+                                status_callback(msg, model=next_model)
+                            break
+                        wait_time = 2.0
+                        msg = f"{attempt_model} is experiencing high demand (503). Retrying once in {int(wait_time)}s..."
                         print(f"[Gemini Notes] {msg}")
                         if status_callback:
                             status_callback(msg, model=attempt_model)
                         time.sleep(wait_time)
+                        continue
+                    elif res.status_code == 400 and "thinkingConfig" in res.text:
+                        payload["generationConfig"].pop("thinkingConfig", None)
                         continue
                     elif res.status_code == 429:
                         last_error = f"Gemini Error 429 ({attempt_model}): {res.text}"
@@ -1289,14 +1334,30 @@ class GeminiCardsEngine:
                             "generate_content_free_tier_requests"
                         ])
                         if is_daily_limit:
-                            msg = f"⚠️ {attempt_model} Free Tier daily limit reached (20 req/day). Switching to next available model [Notes Key: {masked}]..."
+                            next_model = models_to_try[idx + 1] if idx + 1 < len(models_to_try) else "next candidate"
+                            msg = f"⚠️ {attempt_model} Free Tier daily limit reached (20 req/day). Switching to {next_model}..."
                             print(f"[Gemini Notes] {msg}")
                             if status_callback:
-                                status_callback(msg, model=attempt_model)
+                                status_callback(msg, model=next_model)
                             break
 
-                        wait_time = backoff_delays[min(retry, len(backoff_delays) - 1)]
-                        msg = f"{attempt_model} rate-limited (429). Retrying (attempt {retry + 1}/{max_retries}, waiting {int(wait_time)}s) [Notes Key: {masked}]..."
+                        # Extract retryDelay if returned by Gemini (e.g. "30s" or "30.415673054s")
+                        retry_delay_match = re.search(r'"retryDelay":\s*"(\d+(?:\.\d+)?)s?"', res.text)
+                        if retry_delay_match:
+                            wait_time = float(retry_delay_match.group(1)) + 1.0
+                        else:
+                            wait_time = backoff_delays[min(retry, len(backoff_delays) - 1)]
+
+                        # If rate limit wait is long and we have fallback models, switch immediately
+                        if wait_time > 8.0 and idx + 1 < len(models_to_try):
+                            next_model = models_to_try[idx + 1]
+                            msg = f"⚠️ {attempt_model} rate-limited ({int(wait_time)}s reset). Switching immediately to {next_model}..."
+                            print(f"[Gemini Notes] {msg}")
+                            if status_callback:
+                                status_callback(msg, model=next_model)
+                            break
+
+                        msg = f"{attempt_model} rate-limited. Pausing {int(wait_time)}s (attempt {retry + 1}/{max_retries})..."
                         print(f"[Gemini Notes] {msg}")
                         if status_callback:
                             status_callback(msg, model=attempt_model)
@@ -1310,9 +1371,17 @@ class GeminiCardsEngine:
                         last_error = f"Gemini API Error {res.status_code} ({attempt_model}): {res.text}"
                         print(f"[Gemini] {attempt_model} returned {res.status_code}. Trying next candidate...")
                         break
+                except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as exc:
+                    last_error = f"Timeout/Connection Error ({attempt_model}): {exc}"
+                    next_model = models_to_try[idx + 1] if idx + 1 < len(models_to_try) else "next candidate"
+                    msg = f"⚠️ {attempt_model} connection timed out. Failing over to {next_model}..."
+                    print(f"[Gemini Notes] {msg}")
+                    if status_callback:
+                        status_callback(msg, model=next_model)
+                    break
                 except Exception as exc:
                     last_error = f"{type(exc).__name__}: {exc}"
-                    time.sleep(1.5)
+                    time.sleep(1.0)
                     continue
 
         raise ValueError(last_error or "Gemini API failed after retries.")
@@ -1326,6 +1395,133 @@ class GeminiCardsEngine:
                 ilo_text_parts.append(text)
         return "\n".join(ilo_text_parts)
 
+    def _clean_generated_cards(self, cards: list[dict], default_slide: int = 1) -> list[dict]:
+        cleaned_cards = []
+        for c in cards:
+            c.setdefault("slide", default_slide)
+            ctype = c.get("type", "1. Basic")
+            front = c.get("front", "").strip()
+            back = c.get("back", "").strip()
+
+            front = re.sub(r"\s*\[Lecture:[^\]]*\]", "", front).strip()
+            back = re.sub(r"\s*\[Lecture:[^\]]*\]", "", back).strip()
+
+            f_low = front.lower()
+            b_low = back.lower()
+            combined_low = f"{f_low} {b_low}"
+            if any(k in combined_low for k in [
+                "why study", "why do we study", "benefit from the study",
+                "disciplines that benefit", "reasons for studying",
+                "benefit from studying", "benefit of studying",
+                "clinical and scientific disciplines", "disciplines benefit",
+                "clinical disciplines", "scientific disciplines",
+                "learning objective", "learning outcome", "module code",
+                "who won", "nobel prize"
+            ]):
+                continue
+
+            # Reject anatomy part-listing / rote structure naming (tested via Image Occlusion)
+            if any(k in f_low for k in [
+                "list the parts", "what are the parts", "name the parts",
+                "parts of the", "list the structures", "name the structures",
+                "what are the structures that", "list the branches of",
+                "name the branches of", "what are the branches of",
+                "components of the", "list the components", "name the components",
+                "list the muscles of", "name the muscles of", "what muscles make up",
+                "list the bones of", "name the bones of"
+            ]):
+                continue
+
+            has_cloze = bool(re.search(r"\{\{c\d+::", front))
+            if ctype == "Cloze++" and not has_cloze:
+                ctype = "1. Basic"
+            elif ctype == "1. Basic" and has_cloze:
+                ctype = "Cloze++"
+
+            c["type"] = ctype
+            c["front"] = front
+            c["back"] = back
+            cleaned_cards.append(c)
+        return cleaned_cards
+
+    def generate_cards_from_slides_batch(
+        self,
+        slides_batch: list[dict],
+        lecture_name: str,
+        blueprint: str = "",
+        status_callback: Optional[Any] = None
+    ) -> list[dict]:
+        slides_content = []
+        for s in slides_batch:
+            slides_content.append(f"--- SLIDE {s['slide_num']} ---\n{s['text'].strip()}")
+        combined_text = "\n\n".join(slides_content)
+
+        prompt = f"""
+You are an expert Medical Education Assistant generating high-yield MBBS flashcards.
+Lecture: "{lecture_name}"
+Content from slides:
+\"\"\"{combined_text}\"\"\"
+
+STRICT NEGATIVE CONSTRAINTS (NEVER generate cards for these):
+1. Historical / Biographical Trivia:
+   - NEVER ask who won a Nobel Prize or what year a technique was pioneered.
+2. Administrative Metadata & Course Details:
+   - NEVER ask about module codes (e.g. 4MBBS102), lecturer names, lecture titles, or dates.
+3. Learning Objectives & Aims:
+   - NEVER ask what the learning objectives or ILOs of the lecture are.
+4. Disciplinary Justifications & 'Why Study' Questions:
+   - NEVER ask why a medical subject or field is studied, what clinical/scientific disciplines benefit from studying it, or career/specialty overviews.
+   - If a slide contains introductory justification or disciplinary benefits, DO NOT generate any cards for it.
+5. Anatomy Topics — Strictly NO Listing of Anatomical Parts / Structures:
+   - NEVER generate cards asking to list anatomical parts, structures, or components (e.g. 'List the parts of...', 'What are the parts of the pancreas?', 'Name the muscles of the anterior thigh', 'What are the 5 branches of...').
+   - Pure anatomical structure naming and part identification is ALREADY tested via Image Occlusion in Anki.
+   - If the slide is on anatomy, ONLY generate cards testing:
+     * Spatial and anatomical relations (anterior/posterior/medial/lateral/deep/superficial).
+     * Neurovascular supply (motor/sensory innervation, nerve roots, arterial supply, venous drainage).
+     * Lymphatic drainage basins and fascial planes/compartments.
+     * Functional biomechanics / muscle actions (synergists, antagonists).
+     * Clinical correlates, entrapment neuropathies, fracture vulnerabilities, clinical tests, surgical landmarks.
+
+EXAMINABLE MEDICAL FOCUS ONLY:
+- Anatomical relations, neurovascular supply, lymphatics, fascial planes, clinical correlates (NO rote part-listing)
+- Physiological mechanisms, timelines, hormones, receptor interactions
+- Embryological milestones, germ layers, cell lineage, compaction/gastrulation
+- Clinical correlates, congenital anomalies, teratogens, diagnostic signs
+
+Note Type Distribution Rules:
+- '1. Basic' (70% - 80%): Direct medical questions or categorical lists.
+- 'Cloze++' (20% - 30%): Strictly for directional facts, conversions (A -> B), numbers, or reciprocal pairs: '{{{{c1::keyword}}}}'.
+
+Rules:
+- NEVER duplicate front question in back answer.
+- Do NOT append lecture source tags or slide numbers (NEVER append '[Lecture: ..., Slide ...]'). Keep answers clean and concise.
+- For each card, set "slide" to the exact slide number where the concept appears.
+
+Return a valid JSON array of objects:
+[
+  {{
+    "type": "1. Basic",
+    "front": "What is ...?",
+    "back": "Concise answer / mechanism.",
+    "slide": {slides_batch[0]['slide_num']}
+  }}
+]
+"""
+        raw_text = self._call_gemini_rest(
+            prompt,
+            preferred_model="gemini-3-flash-preview",
+            task_label="Card Creation (Batch)",
+            status_callback=status_callback
+        )
+        m = re.search(r"\[.*\]", raw_text, re.DOTALL)
+        if m:
+            try:
+                cards = json.loads(m.group(0))
+                return self._clean_generated_cards(cards, default_slide=slides_batch[0]["slide_num"])
+            except Exception:
+                pass
+        return []
+
     def generate_cards_from_text(
         self,
         slide_text: str,
@@ -1333,6 +1529,7 @@ class GeminiCardsEngine:
         lecture_name: str,
         blueprint: str = "",
         max_cards: int = 3,
+        status_callback: Optional[Any] = None,
     ) -> list[dict]:
         prompt = f"""
 You are an expert Medical Education Assistant generating high-yield MBBS flashcards.
@@ -1385,58 +1582,17 @@ Return a valid JSON array of objects:
   }}
 ]
 """
-        raw_text = self._call_gemini_rest(prompt, preferred_model="gemini-3-flash-preview", task_label="Card Creation")
+        raw_text = self._call_gemini_rest(
+            prompt,
+            preferred_model="gemini-3-flash-preview",
+            task_label="Card Creation",
+            status_callback=status_callback
+        )
         m = re.search(r"\[.*\]", raw_text, re.DOTALL)
         if m:
             try:
                 cards = json.loads(m.group(0))
-                cleaned_cards = []
-                for c in cards:
-                    c.setdefault("slide", slide_num)
-                    ctype = c.get("type", "1. Basic")
-                    front = c.get("front", "").strip()
-                    back = c.get("back", "").strip()
-
-                    front = re.sub(r"\s*\[Lecture:[^\]]*\]", "", front).strip()
-                    back = re.sub(r"\s*\[Lecture:[^\]]*\]", "", back).strip()
-
-                    f_low = front.lower()
-                    b_low = back.lower()
-                    combined_low = f"{f_low} {b_low}"
-                    if any(k in combined_low for k in [
-                        "why study", "why do we study", "benefit from the study",
-                        "disciplines that benefit", "reasons for studying",
-                        "benefit from studying", "benefit of studying",
-                        "clinical and scientific disciplines", "disciplines benefit",
-                        "clinical disciplines", "scientific disciplines",
-                        "learning objective", "learning outcome", "module code",
-                        "who won", "nobel prize"
-                    ]):
-                        continue
-
-                    # Reject anatomy part-listing / rote structure naming (tested via Image Occlusion)
-                    if any(k in f_low for k in [
-                        "list the parts", "what are the parts", "name the parts",
-                        "parts of the", "list the structures", "name the structures",
-                        "what are the structures that", "list the branches of",
-                        "name the branches of", "what are the branches of",
-                        "components of the", "list the components", "name the components",
-                        "list the muscles of", "name the muscles of", "what muscles make up",
-                        "list the bones of", "name the bones of"
-                    ]):
-                        continue
-
-                    has_cloze = bool(re.search(r"\{\{c\d+::", front))
-                    if ctype == "Cloze++" and not has_cloze:
-                        ctype = "1. Basic"
-                    elif ctype == "1. Basic" and has_cloze:
-                        ctype = "Cloze++"
-
-                    c["type"] = ctype
-                    c["front"] = front
-                    c["back"] = back
-                    cleaned_cards.append(c)
-                return cleaned_cards
+                return self._clean_generated_cards(cards, default_slide=slide_num)
             except Exception:
                 pass
         return []
@@ -1510,6 +1666,23 @@ class GeminiNotesEngine:
     def format_slide_notes(self, slide_text: str, slide_num: int) -> str:
         return f"### Slide {slide_num} Key Takeaways\n\n" + "\n".join(f"- {line}" for line in slide_text.split("\n") if line.strip())
 
+    @staticmethod
+    def _build_slides_summary_str(slides_slice: list[dict]) -> str:
+        s_str = ""
+        for s in slides_slice:
+            is_title_or_admin = (s['slide_num'] == 1) or any(k in (s['title'] + " " + s['body']).lower() for k in [
+                "intended learning", "learning outcome", "learning objective", "aims of this lecture", "aims",
+                "table of contents", "outline", "reading list", "mentimeter", "acknowledgements"
+            ])
+            s_str += f"\n--- SLIDE {s['slide_num']}: {s['title']} ---\n"
+            if s.get("has_diagram") and not is_title_or_admin:
+                s_str += f"[Visual Content: {s['image_count']} diagram/atlas figure(s) on this slide. MANDATORY: Emit '(slide {s['slide_num']}: ...)' marker with caption and narration.]\n"
+            if s['body']:
+                s_str += f"Slide Text:\n{s['body']}\n"
+            if s['notes']:
+                s_str += f"Speaker Notes:\n{s['notes']}\n"
+        return s_str
+
     def generate_lecture_notes(self, prs: Presentation, lecture_name: str, status_callback: Optional[Any] = None) -> tuple[str, str]:
         if not prs:
             raise ValueError("No presentation loaded to generate notes from.")
@@ -1518,7 +1691,7 @@ class GeminiNotesEngine:
         slides_data = []
         ilo_text = ""
         for i, slide in enumerate(prs.slides):
-            _, text = SlideParsEngine.extract_slide_data(slide)
+            raw_imgs, text = SlideParsEngine.extract_slide_data(slide)
             title = ""
             try:
                 if slide.shapes.title and slide.shapes.title.text:
@@ -1545,16 +1718,10 @@ class GeminiNotesEngine:
                 "slide_num": i + 1,
                 "title": title,
                 "body": text.strip(),
-                "notes": notes_slide
+                "notes": notes_slide,
+                "has_diagram": len(raw_imgs) > 0,
+                "image_count": len(raw_imgs)
             })
-
-        slides_summary_str = ""
-        for s in slides_data:
-            slides_summary_str += f"\n--- SLIDE {s['slide_num']}: {s['title']} ---\n"
-            if s['body']:
-                slides_summary_str += f"Slide Text:\n{s['body']}\n"
-            if s['notes']:
-                slides_summary_str += f"Speaker Notes:\n{s['notes']}\n"
 
         total_slides_count = len(prs.slides)
         all_topics_list = [f"Slide {s['slide_num']}: {s['title']}" for s in slides_data if s['title']]
@@ -1586,7 +1753,6 @@ The student has provided {len(custom_templates[:3])} real lecture note templates
 2. If the user uses specific section dividers, emojis, table summaries, bold/underline patterns, or callout formats in their templates, adopt them faithfully.
 3. Crucial Diagram Capture: Wherever slides contain key diagrams or visual atlas figures, you MUST still output `(slide N: what the diagram shows)` on its own line followed by a 1-line user revision caption so Synapse can crop and embed the diagram in Notion."""
         else:
-            # Calibrated Default MBBS Synapse Style
             style_guide = ""
             style_guide_path = BUNDLE_DIR / "my-lecture-notes.md"
             if style_guide_path.exists():
@@ -1635,6 +1801,160 @@ Formatting in Notion:
 
 {ref_examples_block}"""
 
+        shared_instructions = f"""
+CRITICAL COMPLETENESS, THEORETICAL RIGOR & DIAGRAM CAPTURE INSTRUCTIONS:
+1. MANDATORY FULL SEQUENTIAL LECTURE COVERAGE (NO SKIPPED SLIDES, NO BRIEF NOTES):
+- You MUST step through the lecture following the exact natural order of the slides.
+- DO NOT collapse multiple distinct slides into a brief 1-line bullet or general overview! Thoroughly cover the medical substance of all slides without skipping.
+- Extract full medical details: anatomical boundaries, relationships, muscle attachments, neurovascular supply, physiological functions, and clinical correlates.
+- Never write brief high-level summaries. Detailed, complete, and exhaustive for Year 1 MBBS examinations.
+
+2. EXHAUSTIVE ANATOMICAL, HISTOLOGICAL & PHYSIOLOGICAL GRANULARITY:
+- Explicitly detail every individual vessel and parent artery/vein (distinguish superior vs inferior surfaces, specific branches, drainage into azygos/IVC/internal thoracic).
+- Explicitly list exact vertebral levels, boundaries, ligaments, and muscle crura.
+- Detail every structure transmitted through every aperture, foramen, or hiatus.
+
+3. MANDATORY DIAGRAM REFERENCE MARKERS FOR ALL DISTINCT VISUALS:
+- Emit explicit diagram reference on its own line:
+(slide N: what the diagram shows)
+followed by a 1-line user revision caption on the next line ("what to notice, what to ignore, what to memorize").
+- STRICT PROHIBITION: NEVER emit a diagram reference for Slide 1 (Title slide with university logos/module codes) or administrative/ILO slides. Only emit markers for content slides (Slide 2+).
+- Visual deduplication rule: If consecutive slides repeat the exact same illustration, emit only ONE diagram marker under the section where first introduced.
+- Anchor distinct diagrams individually under their relevant sections.
+
+4. CLINICAL MECHANISMS, CAUSE-AND-EFFECT DEPTH & MEMORY HOOKS:
+- Explain the functional cause-and-effect mechanism for every concept.
+- Include 1-2 punchy memory hooks or mnemonics per major lecture section.
+
+5. COMPLEX WORDS & PHRASES:
+Whenever encountering any complex, technical, or obscure medical/anatomical words or phrases, provide a brief description ~1 to 2 sentences long in brackets `(...)` right after the term explaining what it means in simple English.
+
+6. NOTION STRUCTURE & SPACING:
+- Before each major block (<b><u>Major Block</u></b>), add an empty paragraph, written `<p />` on its own line with a blank line either side.
+- Topic headings inside Notes are underlined plain text (`<u>Topic:</u>`), not ## headings.
+- Use bold `**term:**` for bullet points to highlight key concepts cleanly.
+"""
+
+        engine = self._cards_engine or GeminiCardsEngine(self._config)
+
+        # ── 2-PASS CHUNKED SYNTHESIS (FOR DECKS > 12 SLIDES) ───────────────────
+        # Splits long decks into 2 sequential chunks to prevent 503 overload and maintain flagship quality.
+        if total_slides_count > 12:
+            half_idx = total_slides_count // 2
+            slides_part1_str = self._build_slides_summary_str(slides_data[:half_idx])
+            slides_part2_str = self._build_slides_summary_str(slides_data[half_idx:])
+
+            # ── PASS 1: Learning Objectives + Slides 1 to N//2 ──
+            if status_callback:
+                status_callback(f"Generating Part 1/2: Learning Objectives & Slides 1–{half_idx}...", model="gemini-4-hydrogen")
+
+            prompt_pass1 = f"""You are the student's personal medical study partner writing high-yield lecture notes for King's College London MBBS Year 1.
+Your task is to turn these lecture slides into notes that read as if the user wrote them: lean, in their own words, built for revision rather than completeness.
+
+{style_guide_section}
+
+Lecture Title: "{lecture_name}"
+Total Slides in Deck: {total_slides_count}
+GENERATION PHASE: PART 1 OF 2 (Learning Objectives & Slides 1 through {half_idx})
+
+COMPLETE LECTURE SYLLABUS:
+{topics_summary}
+
+Extracted Slide Content for Part 1 (Slides 1 through {half_idx}):
+{slides_part1_str}
+
+{shared_instructions}
+
+PART 1 EXECUTION RULES:
+1. Begin with the complete, unified ## 🎯 Learning Objectives for the ENTIRE lecture (synthesized directly from lecture slides & syllabus).
+2. Follow with ## 📝 Notes covering Slides 1 through {half_idx} in strict sequential order.
+3. Output ONLY raw markdown starting with ## 🎯 Learning Objectives.
+"""
+
+            raw_part1 = engine._call_gemini_rest(
+                prompt_pass1,
+                timeout=180,
+                status_callback=status_callback,
+                preferred_model="gemini-4-hydrogen",
+                task_label="Notes Part 1/2",
+                restrict_to_flagship=True
+            ).strip()
+
+            if getattr(engine, "_cancel_requested", False):
+                raise InterruptedError("Generation cancelled by user.")
+
+            # Extract unified Learning Objectives from Part 1
+            ilo_match = re.search(r"##\s*(?:🎯\s*)?Learning Objectives(.*?)(?=##\s*(?:📝\s*)?Notes|\Z)", raw_part1, re.DOTALL | re.IGNORECASE)
+            ilo_block = ilo_match.group(1).strip() if ilo_match else (ilo_text or "Understand the anatomical structures, pathways, and physiological mechanisms.")
+
+            # Extract Part 1 Notes body
+            notes_match = re.search(r"##\s*(?:📝\s*)?Notes(.*)", raw_part1, re.DOTALL | re.IGNORECASE)
+            if notes_match:
+                notes_part1 = notes_match.group(1).strip()
+            else:
+                notes_part1 = re.sub(r"^##\s*(?:🎯\s*)?Learning Objectives.*?\n\n", "", raw_part1, flags=re.DOTALL | re.IGNORECASE).strip()
+
+            # Extract covered section headings from Part 1 to provide continuity context for Pass 2
+            covered_headings = re.findall(r"(?:<b><u>|<u>Topic:)(.*?)(?:</u>|</u></b>|:)", notes_part1)
+            part1_outline = ", ".join(h.strip() for h in covered_headings[:8] if h.strip()) or f"Slides 1 to {half_idx}"
+
+            # ── PASS 2: Slides (N//2)+1 to N (Carrying Forward Context) ──
+            if status_callback:
+                status_callback(f"Generating Part 2/2: Slides {half_idx + 1}–{total_slides_count}...", model="gemini-4-hydrogen")
+
+            prompt_pass2 = f"""You are the student's personal medical study partner writing high-yield lecture notes for King's College London MBBS Year 1.
+Your task is to continue generating comprehensive lecture notes for the second half of this lecture, ensuring seamless continuity with Part 1.
+
+{style_guide_section}
+
+Lecture Title: "{lecture_name}"
+Total Slides in Deck: {total_slides_count}
+GENERATION PHASE: PART 2 OF 2 (Slides {half_idx + 1} through {total_slides_count})
+
+ESTABLISHED LECTURE LEARNING OBJECTIVES (from Part 1):
+{ilo_block}
+
+TOPICS ALREADY COVERED IN PART 1 (Slides 1 to {half_idx}):
+{part1_outline}
+
+Extracted Slide Content for Part 2 (Slides {half_idx + 1} through {total_slides_count}):
+{slides_part2_str}
+
+{shared_instructions}
+
+PART 2 CONTINUITY RULES:
+1. STRICTLY DO NOT output `## 🎯 Learning Objectives` or re-state the learning objectives (already established in Part 1).
+2. Continue directly with the Notes body covering Slides {half_idx + 1} through {total_slides_count} in sequential order without skipping.
+3. Maintain the exact same style, clinical depth, `<p />` dividers, `<u>Topic:</u>` headings, bracketed term clarifications `(...)`, and single-slide diagram markers `(slide N: ...)`.
+4. Output raw markdown.
+"""
+
+            raw_part2 = engine._call_gemini_rest(
+                prompt_pass2,
+                timeout=180,
+                status_callback=status_callback,
+                preferred_model="gemini-4-hydrogen",
+                task_label="Notes Part 2/2",
+                restrict_to_flagship=True
+            ).strip()
+
+            if getattr(engine, "_cancel_requested", False):
+                raise InterruptedError("Generation cancelled by user.")
+
+            # Clean Part 2 body (remove any stray ILO or Notes headers)
+            notes_part2 = re.sub(r"^##\s*(?:🎯\s*)?Learning Objectives.*?(?=##\s*(?:📝\s*)?Notes|\n\n\w|\Z)", "", raw_part2, flags=re.DOTALL | re.IGNORECASE).strip()
+            notes_part2 = re.sub(r"^##\s*(?:📝\s*)?Notes\s*", "", notes_part2, flags=re.IGNORECASE).strip()
+
+            # Merge both parts under a single unified Learning Objectives header and Notes body
+            merged_notes = f"## 🎯 Learning Objectives\n{ilo_block}\n\n## 📝 Notes\n{notes_part1}\n\n<p />\n\n{notes_part2}".strip()
+
+            if not is_custom:
+                merged_notes = re.sub(r"^##\s*(?:🎯\s*)?Learning Objectives", "## 🎯 Learning Objectives", merged_notes, flags=re.MULTILINE | re.IGNORECASE)
+                merged_notes = re.sub(r"^##\s*(?:📝\s*)?Notes", "## 📝 Notes", merged_notes, flags=re.MULTILINE | re.IGNORECASE)
+            return merged_notes, getattr(engine, "last_model_used", "")
+
+        # ── SINGLE-PASS GENERATION (FOR DECKS <= 12 SLIDES) ───────────────────
+        slides_summary_str = self._build_slides_summary_str(slides_data)
         prompt = f"""You are the student's personal medical study partner writing high-yield lecture notes for King's College London MBBS Year 1.
 Your task is to turn these lecture slides into notes that read as if the user wrote them: lean, in their own words, built for revision rather than completeness.
 
@@ -1649,55 +1969,21 @@ FULL LECTURE SYLLABUS TO COVER:
 Extracted Lecture Content:
 {slides_summary_str}
 
-CRITICAL COMPLETENESS, THEORETICAL RIGOR & DIAGRAM CAPTURE INSTRUCTIONS:
-1. COMPLETE SYLLABUS COVERAGE & CROSS-SLIDE SYNTHESIS:
-You MUST synthesize notes covering EVERY SINGLE TOPIC and ALL anatomical details from Slide 1 all the way through to Slide {total_slides_count}.
-Group related slides into cohesive thematic sections (e.g. combine adjacent slides covering attachments, blood supply, and innervation of an anatomical structure into one unified section) rather than producing fragmented, disjointed slide-by-slide notes.
-Do NOT rush, do NOT over-summarize, and do NOT skip later topics or specific anatomical sub-branches. Take all the tokens and depth needed to make the notes truly high-yield and comprehensive for MBBS Year 1 exams.
+{shared_instructions}
 
-2. EXHAUSTIVE ANATOMICAL, HISTOLOGICAL & PHYSIOLOGICAL GRANULARITY:
-- NEVER collapse specific neurovascular pathways or structural attachments into vague generalities (e.g. NEVER just write "supplied by phrenic arteries" or "innervated by nerves").
-- Explicitly detail every individual vessel and parent artery/vein: for example, distinguish the superior surface arterial supply (pericardiacophrenic and musculophrenic from the internal thoracic, superior phrenic from thoracic aorta) vs inferior surface (inferior phrenic from abdominal aorta); venous drainage paths into internal thoracic vs IVC/azygos/hemiazygos.
-- Explicitly list exact vertebral levels, boundaries, ligaments, and muscle crura: for example, boundaries of thoracic inlet (T1, 1st rib, manubrium) vs inferior aperture (T12, 11th/12th ribs, costal margin 7-10, xiphisternal joint); median, medial, and lateral arcuate ligaments and their relations to psoas major and quadratus lumborum; right crus (L1-L3) vs left crus (L1-L2).
-- Detail every structure transmitted through every aperture or hiatus (e.g. Caval T8: IVC + right phrenic nerve; Oesophageal T10: oesophagus + anterior/posterior vagal trunks + oesophageal branches of gastric vessels; Aortic T12: aorta + thoracic duct + azygos vein).
-
-3. MANDATORY DIAGRAM REFERENCE MARKERS FOR ALL DISTINCT VISUALS:
-Whenever a slide contains a key anatomical drawing, atlas diagram (e.g. Thieme, Netter), histological section, vascular map, or clinical flowchart:
-- You MUST emit an explicit diagram reference on its own line:
-(slide N: what the diagram shows)
-followed by a 1-line user revision caption on the next line ("what to notice, what to ignore, what to memorize").
-- Crucial: Single slide numbers per line (e.g. `(slide 5: structures passing through the thoracic inlet)`). This triggers Synapse's native diagram cropper to extract and embed the diagram in Notion.
-- Emit markers for ALL visually distinct diagrams in the lecture (e.g. upper respiratory tract, lower bronchial tree, thoracic inlet transverse view, inferior aperture boundary, muscular diaphragm, arterial/venous supply map, posterior arcuate ligaments, diaphragmatic hiatuses).
-- Visual deduplication rule: In medical slide decks, lecturers often keep the EXACT SAME illustration on screen across 2 or 3 consecutive slides while stepping through different bullet points (such as Slide 8 and Slide 9 repeating the exact same diaphragm overview graphic). You MUST NEVER emit duplicate diagram references for the same graphic! Only emit ONE diagram marker (e.g. `(slide 8: inferior view of the diaphragm)`) under the section where it is first introduced, and NEVER repeat it on Slide 9. NEVER omit distinct diagrams for vascular maps, posterior attachments, or aperture boundaries!
-- Beware multi-slide sequences with identical headlines: Even if consecutive slides share identical slide headlines (for example, Slides 12, 13, and 14 all titled "Openings in diaphragm"), each often contains a completely distinct medical atlas illustration (e.g. Slide 12 shows Netter posterior abdominal attachments & median/medial/lateral arcuate ligaments; Slide 13 shows Thieme hiatus levels; Slide 14 shows neurovascular contents). You MUST anchor each distinct diagram individually under its relevant section!
-
-4. CLINICAL MECHANISMS, CAUSE-AND-EFFECT DEPTH & MEMORY HOOKS:
-- Explain the functional cause-and-effect mechanism for every concept (e.g. why contraction of the central tendon pulls the IVC open to boost venous return during inspiration, while muscular contraction compresses the oesophageal hiatus like a sphincter to prevent reflux; why anatomists call the superior aperture the inlet while clinicians call it the outlet; clinical causes and nerve/vessel compression in Thoracic Outlet Syndrome).
-- Include 1-2 punchy memory hooks or mnemonics per major lecture section (e.g. *"C3, 4, 5 keeps the diaphragm alive"*, *"I ate 10 eggs at 12"*).
-
-5. THEORETICAL & PSYCHOLOGICAL FRAMEWORKS (WHEN APPLICABLE):
-When explaining psychological, behavioral, or physiological models (e.g. Leventhal's Common Sense Model, BMQ, Necessity-Concerns Framework):
-- Detail both the cognitive components AND emotional dimensions (e.g. fear, distress, non-adherence as an emotional coping mechanism).
-- Explicitly cover specific subscales and tools (e.g. BMQ Specific vs General).
-- Explain the clinical cause-and-effect mechanism and high-yield comparisons.
-
-6. COMPLEX WORDS & PHRASES:
-Whenever encountering any complex, technical, or hard-to-understand medical, biochemical, or anatomical words or phrases, you MUST provide a brief description ~1 to 2 sentences long in brackets `(...)` right after the term explaining what it means in simple English.
-
-7. NOTION STRUCTURE & SPACING:
-- Before each major block (<b><u>Major Block</u></b>), add an empty paragraph, written `<p />` on its own line with a blank line either side.
-- Topic headings inside Notes are underlined plain text (`<u>Topic:</u>`), not ## headings.
-- Use bold `**term:**` for bullet points to highlight key concepts cleanly.
-- Output ONLY raw markdown text starting with ## 🎯 Learning Objectives. Do not wrap in markdown code blocks.
+Output ONLY raw markdown text starting with ## 🎯 Learning Objectives. Do not wrap in markdown code blocks.
 """
 
-        engine = self._cards_engine or GeminiCardsEngine(self._config)
+        if status_callback:
+            status_callback("Synthesizing comprehensive lecture notes...", model="gemini-4-hydrogen")
+
         raw_notes = engine._call_gemini_rest(
             prompt,
             timeout=180,
             status_callback=status_callback,
             preferred_model="gemini-4-hydrogen",
-            task_label="Notes Synthesis"
+            task_label="Notes Synthesis",
+            restrict_to_flagship=True
         ).strip()
 
         # Deterministic emoji heading enforcement (applied in default style)
@@ -2112,135 +2398,65 @@ class NotionSyncEngine:
         return upload_id
 
     def _get_diagram_crop_box(self, slide, slide_w: int, slide_h: int) -> Optional[tuple[float, float, float, float]]:
-        # Flatten shapes to discover Group contents and nested elements
-        def flatten(shapes):
-            flat = []
-            for s in shapes:
-                flat.append(s)
-                if getattr(s, "shape_type", None) == 6:  # Group
-                    try:
-                        flat.extend(flatten(s.shapes))
-                    except Exception:
-                        pass
-            return flat
-
-        all_shapes = flatten(slide.shapes)
+        """Intelligently crops slide to visual diagram area:
+        Trims top slide title banner and bottom citation footer while preserving FULL HORIZONTAL SPAN (0.0 to 1.0).
+        This guarantees multi-panel comparisons (A, B, C), side-by-side diagrams, CT scans, and right-aligned anatomical drawings are NEVER sliced.
+        """
         title_shape = getattr(slide.shapes, "title", None)
+        title_bot_norm = 0.10  # default top crop below slide title banner
 
-        body_boxes = []
-        footer_boxes = []
-        diag_boxes = []
+        if title_shape and hasattr(title_shape, "top") and hasattr(title_shape, "height"):
+            if title_shape.top < 0.20 * slide_h:
+                title_bot_norm = min(0.20, max(0.08, (title_shape.top + title_shape.height) / slide_h + 0.008))
+        else:
+            # Check for top header / title text box
+            for s in slide.shapes:
+                if getattr(s, "top", 0) < 0.16 * slide_h and getattr(s, "has_text_frame", False):
+                    words = len(s.text_frame.text.strip().split())
+                    if 0 < words <= 12:
+                        title_bot_norm = min(0.20, max(title_bot_norm, (s.top + s.height) / slide_h + 0.008))
 
-        for s in all_shapes:
+        footer_top_norm = 1.0  # default bottom crop
+        for s in slide.shapes:
+            if getattr(s, "top", 0) >= 0.86 * slide_h and getattr(s, "has_text_frame", False):
+                t_lower = s.text_frame.text.lower()
+                if any(k in t_lower for k in [
+                    "et al", "atlas", "schuenke", "moore", "standring", "gray", "netter",
+                    "copyright", "source", "thieme", "elsevier", "springer", "mcgraw", "mcminn"
+                ]):
+                    footer_top_norm = min(footer_top_norm, max(0.85, s.top / slide_h - 0.005))
+
+        # Check if any picture or drawing extends high up near the top or low near the bottom
+        for s in slide.shapes:
             st = getattr(s, "shape_type", None)
-            # Skip full-slide background rectangles/textures
-            if s.width >= 0.95 * slide_w and s.height >= 0.95 * slide_h:
-                continue
+            if st in (13, 6):  # Picture or Group
+                if s.top < title_bot_norm * slide_h and (s.left + s.width) > 0.3 * slide_w:
+                    # Diagram extends into upper area; reduce top crop to avoid clipping diagram top
+                    title_bot_norm = max(0.0, min(title_bot_norm, s.top / slide_h - 0.005))
+                if (s.top + s.height) > footer_top_norm * slide_h:
+                    # Diagram extends into footer area; push bottom crop down to avoid clipping diagram bottom
+                    footer_top_norm = min(1.0, max(footer_top_norm, (s.top + s.height) / slide_h + 0.005))
 
-            has_tf = getattr(s, "has_text_frame", False)
-            text = s.text_frame.text.strip() if has_tf else ""
-            text_lower = text.lower()
-            word_count = len(text.split())
+        return (0.0, max(0.0, title_bot_norm), 1.0, min(1.0, footer_top_norm))
 
-            # 1. Slide Title & Header Placeholder:
-            # Exclude slide title shape or top title placeholder
-            if s == title_shape or (st == 14 and s.top < 0.14 * slide_h and word_count <= 10):
-                continue
-
-            # 2. ILO / Lecture metadata badges at top
-            if s.top < 0.14 * slide_h and any(k in text_lower for k in ["ilo", "learning outcome", "objectives", "aims of this lecture", "aims"]):
-                continue
-
-            # 3. Footer Citations & Copyright at bottom
-            if s.top >= 0.86 * slide_h and any(k in text_lower for k in [
-                "et al", "atlas", "schuenke", "moore", "standring", "gray", "netter",
-                "copyright", "source", "thieme", "elsevier", "springer", "mcgraw", "mcminn", "clinical atlas"
-            ]):
-                footer_boxes.append((s.left, s.top, s.left + s.width, s.top + s.height))
-                continue
-
-            # 4. Body Lecture Text (paragraphs / multi-line explanations):
-            # Must be excluded from diagram crop
-            if st in (14, 17) and (word_count > 12 or (s.width > 0.40 * slide_w and word_count > 8)):
-                paras = [p.text.strip() for p in s.text_frame.paragraphs if p.text.strip()]
-                lines = sum(max(1, (len(t) + 49) // 50) for t in paras)
-                # Estimate where text actually ends inside the placeholder
-                est_h = lines * 0.042 * slide_h + len(paras) * 0.012 * slide_h
-                actual_bottom = min(s.top + s.height, s.top + est_h)
-                body_boxes.append((s.left, s.top, s.left + s.width, actual_bottom))
-                continue
-
-            # 5. Diagram Elements:
-            # Pictures (13), Groups (6), Shapes/Drawings/Lines (1, 5, 9), and Diagram Labels (17)
-            if st == 13:  # Picture
-                if s.width >= 0.02 * slide_w and s.height >= 0.02 * slide_h:
-                    diag_boxes.append((s.left, s.top, s.left + s.width, s.top + s.height))
-            elif st == 6:  # Group shape
-                if s.width >= 0.03 * slide_w and s.height >= 0.03 * slide_h:
-                    diag_boxes.append((s.left, s.top, s.left + s.width, s.top + s.height))
-            elif st in (1, 5, 9):  # AutoShape, Freeform, Line / Connector
-                if s.top >= 0.08 * slide_h:
-                    diag_boxes.append((s.left, s.top, s.left + s.width, s.top + s.height))
-            elif st == 17:  # Text box (Diagram label / callout <= 12 words)
-                if word_count > 0 and word_count <= 12:
-                    # Disallow tiny slide numbers or isolated punctuation at the extreme bottom right
-                    if s.top > 0.94 * slide_h and s.left > 0.88 * slide_w:
-                        continue
-                    diag_boxes.append((s.left, s.top, s.left + s.width, s.top + s.height))
-
-        if not diag_boxes:
-            return None
-
-        min_l = min(b[0] for b in diag_boxes)
-        min_t = min(b[1] for b in diag_boxes)
-        max_r = max(b[2] for b in diag_boxes)
-        max_b = max(b[3] for b in diag_boxes)
-
-        # Calibrated safe padding
-        pad_w = 0.025 * slide_w
-        pad_h = 0.025 * slide_h
-
-        l = max(0.0, min_l - pad_w)
-        t = max(0.0, min_t - pad_h)
-        r = min(float(slide_w), max_r + pad_w)
-        b = min(float(slide_h), max_b + pad_h)
-
-        # Respect title shape boundary: don't clip into slide title
-        if title_shape and getattr(title_shape, "top", 0) < 0.15 * slide_h:
-            title_bot = title_shape.top + title_shape.height
-            if title_bot < min_t:
-                t = max(t, title_bot + 0.005 * slide_h)
-
-        # Respect body text boundary: NEVER slice into body text paragraphs
-        for bb in body_boxes:
-            # If body text ends above or near min_t and shares horizontal span with the diagram
-            if bb[1] < min_t and max(l, bb[0]) < min(r, bb[2]):
-                if bb[3] > t:
-                    # Clamp t strictly below the body text bottom
-                    t = min(min_t, max(t, bb[3] + 0.005 * slide_h))
-
-        # Respect footer citation boundary: NEVER include footer citations
-        for fb in footer_boxes:
-            if fb[1] > min_t and max(l, fb[0]) < min(r, fb[2]):
-                if fb[1] < b:
-                    b = max(max_b, min(b, fb[1] - 0.005 * slide_h))
-
-        norm_l = max(0.0, min(1.0, l / slide_w))
-        norm_t = max(0.0, min(1.0, t / slide_h))
-        norm_r = max(norm_l + 0.05, min(1.0, r / slide_w))
-        norm_b = max(norm_t + 0.05, min(1.0, b / slide_h))
-
-        return (norm_l, norm_t, norm_r, norm_b)
-
-    def get_best_slide_image(self, prs: Optional[Presentation], slide_num: int) -> Optional[bytes]:
-        if slide_num < 1:
+    def get_best_slide_image(self, prs: Optional[Presentation], slide_num: int, pptx_path: Optional[Path] = None) -> Optional[bytes]:
+        if slide_num <= 1:
+            # Slide 1 is strictly the title/cover slide with university logos and metadata; never an examinable medical diagram
             return None
         slide_idx = slide_num - 1
 
         final_pil = None
 
         # 1. Primary: High-fidelity rendered slide image from SlideRenderEngine with intelligent diagram cropping
-        if self._render_engine and prs and slide_idx < len(prs.slides):
+        # Strictly verify that SlideRenderEngine is currently holding THIS exact presentation (prevents cross-lecture diagram leakage)
+        matching_render = False
+        if self._render_engine:
+            if prs and getattr(self._render_engine, "_prs", None) is prs:
+                matching_render = True
+            elif pptx_path and getattr(self._render_engine, "_current_path", None) == pptx_path:
+                matching_render = True
+
+        if matching_render and prs and slide_idx < len(prs.slides):
             rendered = self._render_engine.get_slide_image(slide_idx, scale=1.5)
             if rendered:
                 final_pil = rendered.convert("RGB")
@@ -2257,7 +2473,38 @@ class NotionSyncEngine:
                     W, H = final_pil.size
                     final_pil = final_pil.crop((0, int(0.12 * H), W, H))
 
-        # 2. Fallback: If render engine was unavailable, extract raw pictures from slide
+        # If not matching the currently active render engine presentation, check if a cached PDF exists for pptx_path
+        if final_pil is None and pptx_path and prs and slide_idx < len(prs.slides):
+            try:
+                mtime = pptx_path.stat().st_mtime if pptx_path.exists() else 0
+                key = hashlib.md5(f"{pptx_path.resolve()}_{mtime}".encode()).hexdigest()
+                cached_pdf = APP_DATA_DIR / "slide_cache" / f"{key}.pdf"
+                if cached_pdf.exists() and cached_pdf.stat().st_size > 0:
+                    with _C_EXTENSION_LOCK:
+                        if HAS_PDFIUM:
+                            doc = pdfium.PdfDocument(str(cached_pdf))
+                            if slide_idx < len(doc):
+                                final_pil = doc[slide_idx].render(scale=1.5).to_pil().convert("RGB")
+                        elif HAS_FITZ:
+                            doc = fitz.open(str(cached_pdf))
+                            if slide_idx < len(doc):
+                                page = doc[slide_idx]
+                                mat = fitz.Matrix(1.5, 1.5)
+                                pix = page.get_pixmap(matrix=mat, alpha=False)
+                                final_pil = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+                    if final_pil:
+                        slide = prs.slides[slide_idx]
+                        crop_norm = self._get_diagram_crop_box(slide, prs.slide_width, prs.slide_height)
+                        if crop_norm:
+                            W, H = final_pil.size
+                            l, t, r, b = crop_norm
+                            box = (int(l * W), int(t * H), int(r * W), int(b * H))
+                            if box[2] > box[0] + 50 and box[3] > box[1] + 50:
+                                final_pil = final_pil.crop(box)
+            except Exception as e:
+                print(f"[get_best_slide_image] Error rendering from cached PDF: {e}")
+
+        # 2. Fallback: Extract raw pictures directly from prs slide
         if final_pil is None and prs and slide_idx < len(prs.slides):
             slide = prs.slides[slide_idx]
             extracted_imgs, _ = SlideParsEngine.extract_slide_data(slide)
@@ -2309,18 +2556,20 @@ class NotionSyncEngine:
             clean_content = re.sub(r'</?(?:b|u|i|span|strong|em)[^>]*>', '', content)
             if not clean_content:
                 return
-            results.append({
-                'type': 'text',
-                'text': {'content': clean_content},
-                'annotations': {
-                    'bold': bold,
-                    'italic': italic,
-                    'strikethrough': False,
-                    'underline': underline,
-                    'code': code,
-                    'color': 'default'
-                }
-            })
+            # Safeguard against Notion's 2000-char per rich_text item limit
+            for chunk_part in [clean_content[k:k+2000] for k in range(0, len(clean_content), 2000)]:
+                results.append({
+                    'type': 'text',
+                    'text': {'content': chunk_part},
+                    'annotations': {
+                        'bold': bold,
+                        'italic': italic,
+                        'strikethrough': False,
+                        'underline': underline,
+                        'code': code,
+                        'color': 'default'
+                    }
+                })
 
         for match in pattern.finditer(text):
             start, end = match.span()
@@ -2369,6 +2618,154 @@ class NotionSyncEngine:
 
         return results
 
+    @classmethod
+    def _is_table_separator(cls, line: str) -> bool:
+        s = line.strip()
+        if not s or "-" not in s:
+            return False
+        inner = s.strip("|")
+        cols = [c.strip() for c in inner.split("|")]
+        if not cols:
+            return False
+        return all(bool(re.match(r"^:?-+:?$", c)) for c in cols)
+
+    @classmethod
+    def _split_table_row(cls, row_str: str) -> list[str]:
+        s = row_str.strip()
+        if s.startswith("|"):
+            s = s[1:]
+        if s.endswith("|"):
+            s = s[:-1]
+        parts = re.split(r"(?<!\\)\|", s)
+        return [p.strip().replace(r"\|", "|") for p in parts]
+
+    def _parse_markdown_table_at(self, lines: list[str], start_idx: int) -> tuple[Optional[dict], int]:
+        if start_idx + 1 >= len(lines):
+            return None, start_idx
+        header_line = lines[start_idx].strip()
+        sep_line = lines[start_idx + 1].strip()
+
+        if "|" not in header_line or not self._is_table_separator(sep_line):
+            return None, start_idx
+
+        header_cols = self._split_table_row(header_line)
+        if not header_cols:
+            return None, start_idx
+
+        table_width = len(header_cols)
+        row_blocks = []
+
+        row_blocks.append({
+            "object": "block",
+            "type": "table_row",
+            "table_row": {
+                "cells": [
+                    self._parse_inline_rich_text(col) if col else []
+                    for col in header_cols
+                ]
+            }
+        })
+
+        curr_idx = start_idx + 2
+        while curr_idx < len(lines):
+            curr_line = lines[curr_idx].strip()
+            if not curr_line or ("|" not in curr_line):
+                break
+            if curr_line.startswith(("#", "- ", "<p", "(")):
+                break
+            if self._is_table_separator(curr_line):
+                curr_idx += 1
+                continue
+
+            row_cols = self._split_table_row(curr_line)
+            if len(row_cols) < table_width:
+                row_cols.extend([""] * (table_width - len(row_cols)))
+            elif len(row_cols) > table_width:
+                row_cols = row_cols[:table_width]
+
+            row_blocks.append({
+                "object": "block",
+                "type": "table_row",
+                "table_row": {
+                    "cells": [
+                        self._parse_inline_rich_text(c) if c else []
+                        for c in row_cols
+                    ]
+                }
+            })
+            curr_idx += 1
+            if len(row_blocks) >= 99:
+                break
+
+        table_block = {
+            "object": "block",
+            "type": "table",
+            "table": {
+                "table_width": table_width,
+                "has_column_header": True,
+                "has_row_header": False,
+                "children": row_blocks
+            }
+        }
+        return table_block, curr_idx
+
+    def _parse_html_table_at(self, lines: list[str], start_idx: int) -> tuple[Optional[dict], int]:
+        curr_line = lines[start_idx].strip()
+        if not curr_line.lower().startswith("<table"):
+            return None, start_idx
+        table_html_parts = []
+        curr_idx = start_idx
+        while curr_idx < len(lines):
+            l = lines[curr_idx]
+            table_html_parts.append(l)
+            curr_idx += 1
+            if "</table>" in l.lower():
+                break
+        html_str = "\n".join(table_html_parts)
+        row_matches = re.findall(r"<tr[^>]*>(.*?)</tr>", html_str, re.IGNORECASE | re.DOTALL)
+        if not row_matches:
+            return None, start_idx
+        parsed_rows = []
+        max_w = 0
+        for r_html in row_matches:
+            cells = re.findall(r"<t[hd][^>]*>(.*?)</t[hd]>", r_html, re.IGNORECASE | re.DOTALL)
+            clean_cells = [re.sub(r"<[^>]+>", "", c).strip() for c in cells]
+            if clean_cells:
+                parsed_rows.append(clean_cells)
+                if len(clean_cells) > max_w:
+                    max_w = len(clean_cells)
+        if max_w == 0 or not parsed_rows:
+            return None, start_idx
+
+        row_blocks = []
+        for r in parsed_rows[:99]:
+            if len(r) < max_w:
+                r.extend([""] * (max_w - len(r)))
+            elif len(r) > max_w:
+                r = r[:max_w]
+            row_blocks.append({
+                "object": "block",
+                "type": "table_row",
+                "table_row": {
+                    "cells": [
+                        self._parse_inline_rich_text(c) if c else []
+                        for c in r
+                    ]
+                }
+            })
+
+        table_block = {
+            "object": "block",
+            "type": "table",
+            "table": {
+                "table_width": max_w,
+                "has_column_header": True,
+                "has_row_header": False,
+                "children": row_blocks
+            }
+        }
+        return table_block, curr_idx
+
     def markdown_to_notion_blocks(self, md_text: str, prs: Optional[Presentation] = None) -> list[dict]:
         lines = md_text.split("\n")
         blocks = []
@@ -2378,6 +2775,20 @@ class NotionSyncEngine:
             line = lines[i].strip()
             if not line:
                 i += 1
+                continue
+
+            # Check for Markdown table
+            tbl_block, next_i = self._parse_markdown_table_at(lines, i)
+            if tbl_block is not None:
+                blocks.append(tbl_block)
+                i = next_i
+                continue
+
+            # Check for HTML table
+            html_tbl, next_i = self._parse_html_table_at(lines, i)
+            if html_tbl is not None:
+                blocks.append(html_tbl)
+                i = next_i
                 continue
 
             if line in ("<p />", "<p/>", "<p>", "<empty-block/>", "<empty-block />", "<br/>", "<br />"):
@@ -3405,7 +3816,7 @@ class GeminiChatbotEngine:
             "relation", "relations", "difference between", "compare", "clinical pearl",
             "ilo", "learning objective", "flashcard", "notes", "test me", "question",
             "what does this mean", "what is this", "what are the", "why does", "how does",
-            "pigeon", "wisdom", "lock in", "tuff pigeon", "dr pigeon"
+            "pigeon", "wisdom", "lock in", "tuff pigeon", "dr pigeon", "fledge", "dr fledge"
         ]
         if any(term in lower for term in study_terms):
             return True, ""
@@ -3492,9 +3903,9 @@ class GeminiChatbotEngine:
 
         mode = (mode or "quick").lower().strip()
         lower_msg = (message or "").lower()
-        # If the user asks for Dr. Pigeon wisdom or unsolicited wisdom, always route to Quick (gemini-3.5-flash-lite)
+        # If the user asks for Dr. Fledge wisdom or unsolicited wisdom, always route to Quick (gemini-3.5-flash-lite)
         # to ensure it NEVER burns the 20 req/day Complex model quota
-        if "wisdom" in lower_msg or "pigeon" in lower_msg:
+        if "wisdom" in lower_msg or "pigeon" in lower_msg or "fledge" in lower_msg:
             mode = "quick"
 
         # Pre-filter check to prevent wasting user API prompt quota on non-lecture/off-topic questions
@@ -3677,8 +4088,8 @@ class GeminiChatbotEngine:
 
         lec_desc = f"all {active_lec_count} lectures in " if active_lec_count else "the lectures in "
         system_instruction = (
-            "You are Dr. P.I. Geon (The Tuff Pigeon Doctor), Senior Registrar in Preclinical Medicine and AI Medical Tutor assisting an MBBS student at King's College London (KCL).\n"
-            "Persona: You are the legendary Tuff Pigeon Doctor of King's College London—intellectually rigorous, clinically sharp, and fiercely committed to helping this student ace their MBBS curriculum. You communicate with authoritative clarity, high-yield clinical precision, and a delightfully dry, direct, and witty British medical wit. You have zero tolerance for procrastination or slacking, but you deliver deep, thorough, and grounded explanations.\n"
+            "You are Dr. Fledge (The Tuff Pigeon Doctor), Senior Registrar in Preclinical Medicine and AI Medical Tutor assisting an MBBS student at King's College London (KCL).\n"
+            "Persona: You are the legendary Tuff Pigeon Doctor, Dr. Fledge, of King's College London—intellectually rigorous, clinically sharp, and fiercely committed to helping this student ace their MBBS curriculum. You communicate with authoritative clarity, high-yield clinical precision, and a delightfully dry, direct, and witty British medical wit. You have zero tolerance for procrastination or slacking, but you deliver deep, thorough, and grounded explanations.\n"
             f"You have direct access to their active lecture slides, OCR labels, and {lec_desc}their KCL OneDrive lecture repository organized into Year 1 Modules:\n"
             "- FBS (Foundations of Biomedical Sciences): MCB, NBSS, NAM, DH, IAI, EAB, GEN\n"
             "- PAS (Physiology and Anatomy of Systems): FAH, FPP, ACRS, PCRS, AGRS, PGRS, AMS, Cranial Nerves\n"
@@ -3693,16 +4104,16 @@ class GeminiChatbotEngine:
             "   - 'Gastrulation establishes the three definitive germ layers [[FAH05L Introduction to Embryology.pptx | Slide 23]].'\n"
             "   - 'Nicotinic receptors require binding of two acetylcholine molecules [[FPP-8 ANS lecture 4MBBS102 2026.27.pptx | Slide 20]].'\n"
             "   The student clicks these inline tags to immediately jump to that slide on the canvas.\n"
-            "4. Tone: Encouraging, intellectually rigorous, using proper medical terminology with Dr. Pigeon's sharp wit.\n"
+            "4. Tone: Encouraging, intellectually rigorous, using proper medical terminology with Dr. Fledge's sharp wit.\n"
             "5. Markdown Formatting: Structure your response with clean GitHub-flavored Markdown: headers (### Section, #### Subsection), bullet points (* Item), bold key terms (**Term**), and callout blockquotes (> Clinical Pearl: ...).\n"
             "6. Chemical & Medical Symbols: Use standard clean notation (e.g. O2, CO2, Ca2+, Na+, ATP, PPi, 3'-OH, 5'-P, Vmax, Km) or standard inline math ($O_2$, $\\alpha$) without complex nested macros.\n"
             "7. Complete Responses: Always conclude your thoughts cleanly. Never leave a section unfinished or cut off.\n"
             "8. STRICT CURRICULUM BOUNDARY & BANTER PROTOCOL (CRITICAL):\n"
-            "   You are strictly Dr. P.I. Geon, MBBS tutor for King's College London students. "
+            "   You are strictly Dr. Fledge, MBBS tutor for King's College London students. "
             "   If the student asks anything irrelevant or off-topic (e.g. general tech/coding, Raspberry Pi, networking, gaming, pop culture, life advice, or non-medical banter):\n"
             "   - DO NOT answer their off-topic question or provide technical instructions.\n"
             "   - Instead, playfully roast them with witty British medical student banter! Tell them to get back to revising, stop being jobless, remind them of their upcoming OSCEs/exams and that the GMC is watching, and demand that they get back to their KCL MBBS lecture slides.\n"
-            "   - When the student asks for unsolicited wisdom or general study advice, deliver sharp, memorable, high-yield clinical pearls and exam mnemonics as Dr. Pigeon, inspiring them to lock in and conquer their revision!"
+            "   - When the student asks for unsolicited wisdom or general study advice, deliver sharp, memorable, high-yield clinical pearls and exam mnemonics as Dr. Fledge, inspiring them to lock in and conquer their revision!"
         )
 
         full_prompt = (
@@ -4029,6 +4440,845 @@ class AnkiExporter:
         return apkg_path
 
 # ─────────────────────────────────────────────────────────────────────────────
+# 9.5 KCL TIMETABLE & DAILY FACT ENGINES
+# ─────────────────────────────────────────────────────────────────────────────
+class KCLTimetableManager:
+    """Manages King's College London MyTimetable (.ics) parsing, caching, and querying."""
+    def __init__(self, storage_path: Path):
+        self.storage_path = storage_path
+
+    @staticmethod
+    def _unfold_ics_lines(raw_text: str) -> list[str]:
+        lines = []
+        for line in raw_text.splitlines():
+            line_str = line.rstrip("\r\n")
+            if not line_str:
+                continue
+            if line_str.startswith((" ", "\t")) and lines:
+                lines[-1] += line_str[1:]
+            else:
+                lines.append(line_str)
+        return lines
+
+    @staticmethod
+    def _parse_ics_datetime(dt_str: str) -> Optional[datetime]:
+        """Parses iCalendar datetime string: YYYYMMDDTHHMMSSZ or YYYYMMDDTHHMMSS or YYYYMMDD."""
+        if not dt_str:
+            return None
+        dt_clean = re.sub(r"^.*?:\s*", "", dt_str).strip()
+        for fmt in ("%Y%m%dT%H%M%SZ", "%Y%m%dT%H%M%S", "%Y%m%d"):
+            try:
+                clean_target = dt_clean[:16] if "T" in dt_clean else dt_clean[:8]
+                if clean_target.endswith("Z"):
+                    return datetime.strptime(clean_target, "%Y%m%dT%H%M%SZ")
+                elif "T" in clean_target:
+                    return datetime.strptime(clean_target[:15], "%Y%m%dT%H%M%S")
+                else:
+                    return datetime.strptime(clean_target[:8], "%Y%m%d")
+            except Exception:
+                continue
+        return None
+
+    KCL_MODULE_MAP: dict[str, tuple[str, str]] = {
+        "4MBBS101": ("FBS", "Foundations of Biomedical Sciences"),
+        "4MBBS102": ("PAS", "Physiology and Anatomy of Systems"),
+        "4MBBS103": ("CS", "Clinical Skills"),
+        "4MBBS104": ("IVBCP", "Introduction to Values-Based Clinical Practice"),
+        "4MBBS105": ("FBS", "Foundations of Biomedical Sciences (Sem 1)"),
+        "4MBBS106": ("PAS", "Physiology and Anatomy of Systems (Sem 2)"),
+        "4MBBS201": ("FBS2", "Foundations of Biomedical Sciences 2"),
+        "4MBBS202": ("PAS2", "Physiology and Anatomy of Systems 2"),
+    }
+
+    @classmethod
+    def clean_kcl_event(cls, ev: dict) -> dict:
+        raw_summary = (ev.get("raw_summary") or ev.get("summary") or "").strip()
+        raw_desc = (ev.get("raw_description") or ev.get("description") or "").strip()
+        loc = (ev.get("location") or "").strip()
+
+        # Parse Celcat MyTimetable summary pattern: e.g. "4MBBS102 PHYSIOLOGY AND SY 000001/Lecture40/01_JT"
+        m = re.match(r"^([0-9A-Z]{7,8})\s+(.*?)\s+\d{6}/([A-Za-z0-9_\s\-]+)/([A-Za-z0-9_]+)$", raw_summary)
+        module_code = ""
+        module_short = "MBBS"
+        module_name = ""
+        activity_raw = ""
+        group = ""
+
+        if m:
+            module_code = m.group(1).upper()
+            raw_mod_name = m.group(2).strip()
+            activity_raw = m.group(3).strip()
+            group = m.group(4).strip()
+            if module_code in cls.KCL_MODULE_MAP:
+                module_short, module_name = cls.KCL_MODULE_MAP[module_code]
+            else:
+                module_short = module_code
+                module_name = raw_mod_name
+        else:
+            code_m = re.search(r"\b(4MBBS\d{3}|[A-Z]{3,4}\d{2,3}[A-Za-z]?)\b", raw_summary)
+            if code_m:
+                module_code = code_m.group(1).upper()
+                if module_code in cls.KCL_MODULE_MAP:
+                    module_short, module_name = cls.KCL_MODULE_MAP[module_code]
+            activity_raw = raw_summary
+
+        act_lower = activity_raw.lower()
+        activity_type = "Lecture"
+        activity_title = activity_raw
+        act_num = ""
+
+        if "clinical" in act_lower:
+            activity_type = "Clinical Skills"
+            num_m = re.search(r"clinical\s*(\d+)", act_lower)
+            if num_m:
+                act_num = num_m.group(1)
+                activity_title = f"Clinical Skills {act_num}"
+            else:
+                activity_title = "Clinical Skills"
+        elif "tut" in act_lower:
+            activity_type = "Tutorial"
+            num_m = re.search(r"tut(?:orial)?\s*(\d+)", act_lower)
+            if num_m:
+                act_num = num_m.group(1)
+                activity_title = f"Tutorial {act_num}"
+            else:
+                activity_title = "Tutorial"
+        elif "study" in act_lower or "self" in act_lower:
+            activity_type = "Self-Study"
+            num_m = re.search(r"(?:study|self\s*study)\s*(\d+)", act_lower)
+            if num_m:
+                act_num = num_m.group(1)
+                activity_title = f"Directed Self-Study {act_num}"
+            else:
+                activity_title = "Directed Self-Study"
+        elif "dissection" in act_lower or "anatomy lab" in act_lower:
+            activity_type = "Dissection"
+            num_m = re.search(r"(?:dissection|lab)\s*(\d+)", act_lower)
+            if num_m:
+                act_num = num_m.group(1)
+                activity_title = f"Dissection Lab {act_num}"
+            else:
+                activity_title = "Dissection Lab"
+        elif "workshop" in act_lower:
+            activity_type = "Workshop"
+            num_m = re.search(r"workshop\s*(\d+)", act_lower)
+            if num_m:
+                act_num = num_m.group(1)
+                activity_title = f"Workshop {act_num}"
+            else:
+                activity_title = "Workshop"
+        elif "lecture" in act_lower:
+            activity_type = "Lecture"
+            num_m = re.search(r"lecture\s*(\d+)", act_lower)
+            if num_m:
+                act_num = num_m.group(1)
+                activity_title = f"Lecture {act_num}"
+            else:
+                activity_title = "Lecture"
+
+        # Celcat metadata parsing: unpack Location, Date, Group(s), Additional Information, Staff
+        desc_single = re.sub(r"[\r\n]+", " ", raw_desc).strip()
+
+        # Check if Celcat description embeds Event type (e.g. "Event type: Clinical Skill Description: ...")
+        ev_type_m = re.search(r"^\s*Event\s*type\s*:\s*([^:]+?)\s*Description\s*:", desc_single, re.IGNORECASE)
+        if ev_type_m:
+            celcat_ev_type = ev_type_m.group(1).strip()
+            if "clinical" in celcat_ev_type.lower():
+                activity_type = "Clinical Skills"
+                if not act_num:
+                    activity_title = "Clinical Skills"
+            elif "tut" in celcat_ev_type.lower():
+                activity_type = "Tutorial"
+                if not act_num:
+                    activity_title = "Tutorial"
+            elif "workshop" in celcat_ev_type.lower():
+                activity_type = "Workshop"
+                if not act_num:
+                    activity_title = "Workshop"
+            elif "lecture" in celcat_ev_type.lower():
+                activity_type = "Lecture"
+                if not act_num:
+                    activity_title = "Lecture"
+
+        desc_parts = re.split(r"\s*(?:Location|Date|Group\(s\)|Groups?|Additional Information|Staff|Lecturer):\s*", desc_single, maxsplit=1, flags=re.IGNORECASE)
+        pure_topic = desc_parts[0].strip() if desc_parts else ""
+
+        # Strip all Celcat boilerplate prefixes ("Event type: ... Description:", "Description:", "Event type:", etc.)
+        pure_topic = re.sub(r"^\s*Event\s*type\s*:[^:]*Description\s*:\s*", "", pure_topic, flags=re.IGNORECASE).strip()
+        pure_topic = re.sub(r"^\s*(?:Event\s*type|Title|Topic|Subject|Description)\s*:\s*", "", pure_topic, flags=re.IGNORECASE).strip()
+        pure_topic = re.sub(r"^\s*Description\s*:\s*", "", pure_topic, flags=re.IGNORECASE).strip()
+
+        loc_m = re.search(r"Location:\s*(.*?)(?=\s+(?:Date|Group\(s\)|Groups?|Additional Information|Staff|Lecturer):|$)", desc_single, re.IGNORECASE)
+        if loc_m:
+            parsed_loc = loc_m.group(1).strip()
+            if parsed_loc and (not loc or loc == "Guy's Campus"):
+                loc = parsed_loc
+
+        staff_m = re.search(r"(?:Staff|Lecturer):\s*(.*?)(?=\s+(?:Location|Date|Group\(s\)|Groups?|Additional Information):|$)", desc_single, re.IGNORECASE)
+        staff = staff_m.group(1).strip() if staff_m else ""
+
+        grp_m = re.search(r"Group\(s\):\s*(.*?)(?=\s+(?:Location|Date|Additional Information|Staff|Lecturer):|$)", desc_single, re.IGNORECASE)
+        if grp_m:
+            group = grp_m.group(1).strip()
+
+        add_m = re.search(r"Additional Information:\s*(.*?)(?=\s+(?:Location|Date|Group\(s\)|Groups?|Staff|Lecturer):|$)", desc_single, re.IGNORECASE)
+        additional_info = add_m.group(1).strip() if add_m else ""
+
+        # Specific Lecture Code extraction (e.g. ACRS04L, MCB07L, FAH01L) - avoid 4MBBS module codes
+        lec_code = ""
+        c_m = re.search(r"\b([A-Z]{3,5}[-_]?\d{1,3}[A-Za-z]?)\b", pure_topic or desc_single)
+        if c_m:
+            cand = c_m.group(1).upper().replace("-", "")
+            if not cand.startswith("4MBBS"):
+                lec_code = cand
+
+        # The clean title for the card must strictly be the lecture topic name
+        if pure_topic:
+            clean_title = pure_topic
+        elif activity_title:
+            clean_title = f"{module_short} · {activity_title}"
+        else:
+            clean_title = raw_summary or "KCL Session"
+
+        topic_title = pure_topic
+
+        # Duration Calculation
+        st = ev.get("start_time", "")
+        et = ev.get("end_time", "")
+        duration_str = ev.get("duration_str") or ""
+        if not duration_str and st and et:
+            try:
+                t1 = datetime.strptime(st, "%H:%M")
+                t2 = datetime.strptime(et, "%H:%M")
+                mins = int((t2 - t1).total_seconds() / 60)
+                if mins >= 60:
+                    hrs = mins / 60.0
+                    duration_str = f"{int(hrs)} hr" if hrs.is_integer() else f"{hrs:.1f} hrs"
+                else:
+                    duration_str = f"{mins} mins"
+            except Exception:
+                pass
+
+        return {
+            **ev,
+            "code": lec_code or module_code,
+            "lec_code": lec_code,
+            "type": activity_type,
+            "clean_title": clean_title,
+            "module_code": module_code,
+            "module_short": module_short,
+            "module_name": module_name,
+            "activity_type": activity_type,
+            "activity_title": activity_title,
+            "activity_num": act_num,
+            "group": group,
+            "staff": staff,
+            "additional_info": additional_info,
+            "topic_title": topic_title,
+            "duration_str": duration_str,
+            "location": loc or "Guy's Campus",
+            "raw_summary": raw_summary,
+            "raw_description": raw_desc
+        }
+
+    def parse_ics_content(self, ics_text: str, filename: str = "") -> list[dict]:
+        lines = self._unfold_ics_lines(ics_text)
+        events = []
+        curr = None
+
+        for line in lines:
+            line_s = line.strip()
+            if line_s == "BEGIN:VEVENT":
+                curr = {}
+            elif line_s == "END:VEVENT":
+                if curr and curr.get("summary"):
+                    events.append(curr)
+                curr = None
+            elif curr is not None:
+                if ":" in line:
+                    k_part, val = line.split(":", 1)
+                    k = k_part.split(";")[0].strip().upper()
+                    clean_val = val.replace("\\n", "\n").replace("\\;", ";").replace("\\,", ",").strip()
+                    if k == "SUMMARY":
+                        curr["summary"] = clean_val
+                    elif k == "LOCATION":
+                        curr["location"] = clean_val
+                    elif k == "DESCRIPTION":
+                        curr["description"] = clean_val
+                    elif k == "DTSTART":
+                        dt = self._parse_ics_datetime(val)
+                        if dt:
+                            curr["dtstart"] = dt.isoformat()
+                            curr["date"] = dt.strftime("%Y-%m-%d")
+                            curr["start_time"] = dt.strftime("%H:%M")
+                    elif k == "DTEND":
+                        dt = self._parse_ics_datetime(val)
+                        if dt:
+                            curr["dtend"] = dt.isoformat()
+                            curr["end_time"] = dt.strftime("%H:%M")
+                    elif k == "UID":
+                        curr["uid"] = clean_val
+
+        processed_events = []
+        for ev in events:
+            summary = ev.get("summary", "")
+            code_match = re.search(r"\b([A-Z]{2,6}[-_]?\d{1,3}[A-Za-z]?)\b", summary)
+            ev["code"] = code_match.group(1).replace("-", "") if code_match else ""
+            cleaned = self.clean_kcl_event(ev)
+            processed_events.append(cleaned)
+
+        processed_events.sort(key=lambda x: x.get("dtstart", ""))
+        self.save_timetable(processed_events, source_name=filename or "MyTimetable")
+        return processed_events
+
+    def save_timetable(self, events: list[dict], source_name: str = "", source_url: str = ""):
+        try:
+            self.storage_path.parent.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "last_updated": datetime.now().isoformat(),
+                "source_name": source_name,
+                "source_url": source_url,
+                "events": events
+            }
+            with open(self.storage_path, "w", encoding="utf-8") as f:
+                json.dump(payload, f, indent=2)
+        except Exception as e:
+            print(f"[KCLTimetableManager] Error saving timetable: {e}")
+
+    def sync_from_url(self, calendar_url: str) -> dict:
+        url = (calendar_url or "").strip()
+        if not url:
+            raise ValueError("No calendar URL provided.")
+
+        # Convert webcal:// or webcals:// to standard https://
+        if url.lower().startswith("webcal://"):
+            url = "https://" + url[9:]
+        elif url.lower().startswith("webcals://"):
+            url = "https://" + url[10:]
+        elif not url.lower().startswith(("http://", "https://")):
+            url = "https://" + url
+
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Synapse/2.0"
+        }
+        res = requests.get(url, headers=headers, timeout=20)
+        if res.status_code != 200:
+            raise ValueError(f"Failed to fetch calendar feed (HTTP {res.status_code})")
+
+        ics_text = res.text
+        if "BEGIN:VCALENDAR" not in ics_text and "BEGIN:VEVENT" not in ics_text:
+            raise ValueError("The URL responded, but does not contain valid iCalendar (.ics) data.")
+
+        events = self.parse_ics_content(ics_text, filename="KCL Live Feed")
+        self.save_timetable(events, source_name="KCL Live Feed", source_url=url)
+        return {
+            "success": True,
+            "url": url,
+            "total_events": len(events),
+            "last_synced": datetime.now().isoformat()
+        }
+
+    def load_timetable(self) -> dict:
+        if not self.storage_path.exists():
+            return {"last_updated": None, "source_name": None, "events": []}
+        try:
+            with open(self.storage_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if "events" in data and isinstance(data["events"], list):
+                    data["events"] = [self.clean_kcl_event(e) for e in data["events"]]
+                return data
+        except Exception as e:
+            print(f"[KCLTimetableManager] Error loading timetable: {e}")
+            return {"last_updated": None, "source_name": None, "events": []}
+
+    def get_sessions_for_view(self, view_mode: str = "today", target_date: str = "") -> dict:
+        data = self.load_timetable()
+        all_events = data.get("events", [])
+        now = datetime.now()
+        today_str = now.strftime("%Y-%m-%d")
+        tomorrow_str = (now + timedelta(days=1)).strftime("%Y-%m-%d")
+
+        week_dates = [(now + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(7)]
+        week_grouped = []
+
+        if view_mode == "date" and target_date:
+            filtered = [e for e in all_events if e.get("date") == target_date]
+            try:
+                dt_obj = datetime.strptime(target_date, "%Y-%m-%d")
+                label = dt_obj.strftime("%A, %d %B %Y")
+            except Exception:
+                label = f"Schedule for {target_date}"
+        elif view_mode == "tomorrow":
+            filtered = [e for e in all_events if e.get("date") == tomorrow_str]
+            label = "Tomorrow's Schedule"
+        elif view_mode == "week":
+            filtered = [e for e in all_events if e.get("date") in set(week_dates)]
+            label = "This Week's Schedule"
+            for d in week_dates:
+                day_sessions = [e for e in all_events if e.get("date") == d]
+                try:
+                    d_dt = datetime.strptime(d, "%Y-%m-%d")
+                    day_name = d_dt.strftime("%A, %d %b")
+                except Exception:
+                    day_name = d
+                week_grouped.append({
+                    "date": d,
+                    "date_formatted": day_name,
+                    "is_today": (d == today_str),
+                    "sessions": day_sessions
+                })
+        else: # "today"
+            filtered = [e for e in all_events if e.get("date") == today_str]
+            label = "Today's Schedule"
+
+        distinct_dates = sorted(list({e.get("date") for e in all_events if e.get("date")}))
+
+        return {
+            "view_mode": view_mode,
+            "label": label,
+            "current_time": now.strftime("%H:%M"),
+            "today_date": today_str,
+            "target_date": target_date or (tomorrow_str if view_mode == "tomorrow" else today_str),
+            "available_dates": distinct_dates,
+            "last_updated": data.get("last_updated"),
+            "source_name": data.get("source_name"),
+            "source_url": data.get("source_url", ""),
+            "total_imported": len(all_events),
+            "sessions": filtered,
+            "week_grouped": week_grouped
+        }
+
+
+CURATED_PIGEON_FACTS = [
+    {
+        "topic": "Anatomy · Neurovascular",
+        "title": "Recurrent Laryngeal Nerve Asymmetry",
+        "fact": "The left recurrent laryngeal nerve loops under the aortic arch (lateral to ligamentum arteriosum), while the right recurrent laryngeal nerve loops under the right subclavian artery.",
+        "clinical_pearl": "Left recurrent laryngeal nerve palsy often signals mediastinal pathology (e.g. bronchogenic carcinoma of the left lung apex, aortic aneurysm, mediastinal lymphadenopathy), presenting with hoarseness and a bovine cough.",
+        "pigeon_quote": "Left loops low around the aorta! Protect those vocal cords and don't get caught out on your anatomy viva. 🐦🩺",
+        "tags": ["Anatomy", "Head & Neck", "High-Yield"]
+    },
+    {
+        "topic": "Physiology · Cardiovascular",
+        "title": "Frank-Starling Law of the Heart",
+        "fact": "The stroke volume of the heart increases in response to an increase in end-diastolic volume (preload) when all other factors remain constant, optimizing myofilament actin-myosin overlap.",
+        "clinical_pearl": "In severe systolic heart failure, the myocardium becomes overstretched beyond the optimal sarcomere length (2.2 µm), causing the curve to plateau or drop off, requiring inotropic support.",
+        "pigeon_quote": "More stretch equals more snap! Until the heart fails, then it's pure congestion. 🐦🩺",
+        "tags": ["Physiology", "Cardiovascular", "Preload"]
+    },
+    {
+        "topic": "Biochemistry · Metabolism",
+        "title": "Rate-Limiting Step of Glycolysis",
+        "fact": "Phosphofructokinase-1 (PFK-1) irreversibly converts Fructose-6-Phosphate to Fructose-1,6-Bisphosphate and serves as the primary rate-limiting and committed step of glycolysis.",
+        "clinical_pearl": "PFK-1 is allosterically inhibited by ATP and citrate (signals of cellular high energy), and strongly activated by AMP and Fructose-2,6-Bisphosphate (stimulated by insulin).",
+        "pigeon_quote": "PFK-1 is the gatekeeper of your ATP budget. Respect the phosphates! 🐦🩺",
+        "tags": ["Biochemistry", "Glycolysis", "Enzymes"]
+    },
+    {
+        "topic": "Anatomy · Thorax",
+        "title": "Apertures of the Thoracic Diaphragm",
+        "fact": "The thoracic diaphragm has three major openings at vertebral levels T8, T10, and T12: IVC & right phrenic nerve (T8), Oesophagus & vagus nerves (T10), and Aorta, thoracic duct & azygos vein (T12).",
+        "clinical_pearl": "Mnemonic: 'I 8 10 Eggs At 12' — IVC (8), Oesophagus (10), Aorta (12). Remember the phrenic nerve pierces the central tendon alongside the IVC.",
+        "pigeon_quote": "I ate 10 eggs at 12! Never forget your vertebral levels on exam day. 🐦🩺",
+        "tags": ["Anatomy", "Thorax", "Mnemonics"]
+    },
+    {
+        "topic": "Pharmacology · Autonomics",
+        "title": "Adrenergic Receptor G-Protein Coupling",
+        "fact": "Adrenergic receptors couple to distinct G-proteins: Alpha-1 couples to Gq (activates PLC -> IP3/DAG -> increased intracellular Ca2+), Alpha-2 to Gi (inhibits adenylate cyclase -> decreased cAMP), and Beta-1, 2, 3 to Gs (stimulates adenylate cyclase -> increased cAMP).",
+        "clinical_pearl": "Mnemonic: 'QISS' — Alpha-1 (q), Alpha-2 (i), Beta-1 (s), Beta-2 (s). Beta-1 agonists increase cardiac inotropy/chronotropy, while Beta-2 agonists induce smooth muscle bronchodilation.",
+        "pigeon_quote": "QISS and tell! Master your G-proteins and autonomic pharmacology becomes a breeze. 🐦🩺",
+        "tags": ["Pharmacology", "Autonomics", "G-Proteins"]
+    },
+    {
+        "topic": "Anatomy · Pelvis & Perineum",
+        "title": "Pudendal Nerve Pathway & Alcock's Canal",
+        "fact": "The pudendal nerve (S2-S4) exits the pelvis via the greater sciatic foramen (inferior to piriformis), crosses the sacrospinous ligament / ischial spine, and re-enters via the lesser sciatic foramen into the pudendal (Alcock's) canal.",
+        "clinical_pearl": "Pudendal nerve blocks for second-stage labor or perineal surgery palpate the ischial spine transvaginally as the landmark to infiltrate local anesthetic.",
+        "pigeon_quote": "S2, 3, 4 keeps the pee and poo off the floor! Watch that ischial spine landmark. 🐦🩺",
+        "tags": ["Anatomy", "Pelvis", "Nerve Roots"]
+    },
+    {
+        "topic": "Physiology · Respiratory",
+        "title": "Ventilation-Perfusion (V/Q) Mismatch",
+        "fact": "Normal overall V/Q ratio is ~0.8. In the apex of the upright lung, V/Q is highest (~3.0, high PO2, low PCO2); at the base, perfusion outstrips ventilation so V/Q is lowest (~0.6).",
+        "clinical_pearl": "Mycobacterium tuberculosis thrives in high oxygen tension and thus preferentially colonizes the lung apices. Pulmonary embolism creates a dead space (V/Q -> infinity).",
+        "pigeon_quote": "Gravity pulls blood down, so the base is well-perfused, but TB loves the oxygen-rich apices! 🐦🩺",
+        "tags": ["Physiology", "Respiratory", "V/Q"]
+    }
+]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 9B. IN-APP LECTURE NOTES MANAGER (MBBS MODULE & BLOCK TAXONOMY)
+# ─────────────────────────────────────────────────────────────────────────────
+class InAppNotesManager:
+    """Manages local in-app lecture notes categorized by MBBS Year 1 Module and Block."""
+
+    KCL_STRUCTURE: dict[str, dict] = {
+        "FBS": {
+            "name": "Foundations of Biomedical Sciences",
+            "blocks": {
+                "MCB": "Molecular and Cellular Biology",
+                "NBSS": "Neural Basis of Systemic Structure",
+                "NAM": "Nerve and Muscle",
+                "DH": "Development and Homeostasis",
+                "IAI": "Infection, Adaptation and Immunity",
+                "EAB": "Elimination, Absorption and Balance",
+                "GEN": "Genetics"
+            }
+        },
+        "PAS": {
+            "name": "Physiology and Anatomy of Systems",
+            "blocks": {
+                "FAH": "Fundamental Anatomy and Histology",
+                "FPP": "Foundations of Pharmacological Principles",
+                "ACRS": "Anatomy of Cardiovascular and Respiratory Systems",
+                "PCRS": "Physiology of Cardiovascular and Respiratory Systems",
+                "AGRS": "Anatomy of Gastrointestinal and Renal Systems",
+                "PGRS": "Physiology of Gastrointestinal and Renal Systems",
+                "AMS": "Anatomy of Musculoskeletal System",
+                "Cranial Nerves": "Cranial Nerve Anatomy & Pathways"
+            }
+        },
+        "IVBCP": {
+            "name": "Introduction to Values-Based Clinical Practice",
+            "blocks": {
+                "Clinical Skills": "Clinical Skills & Patient Assessment",
+                "Human Values": "Medical Ethics, Law & Professionalism"
+            }
+        },
+        "General": {
+            "name": "General Clinical & Science Notes",
+            "blocks": {
+                "General": "Other Revision Notes"
+            }
+        }
+    }
+
+    def __init__(self, base_dir: Path):
+        self.base_dir = base_dir
+        self.index_file = self.base_dir / "notes_index.json"
+
+    def _ensure_storage(self):
+        try:
+            self.base_dir.mkdir(parents=True, exist_ok=True)
+            for mod, data in self.KCL_STRUCTURE.items():
+                for blk in data["blocks"].keys():
+                    (self.base_dir / mod / blk.replace(" ", "_")).mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            print(f"[InAppNotesManager] _ensure_storage note: {e}")
+
+    def _load_index(self) -> dict:
+        try:
+            if self.index_file.exists():
+                return json.loads(self.index_file.read_text(encoding="utf-8"))
+        except Exception as e:
+            print(f"[InAppNotesManager] _load_index note: {e}")
+        return {"notes": {}}
+
+    def _save_index(self, data: dict):
+        try:
+            self.base_dir.mkdir(parents=True, exist_ok=True)
+            self.index_file.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+        except Exception as e:
+            print(f"[InAppNotesManager] _save_index note: {e}")
+
+    @classmethod
+    def detect_module_and_block(cls, title: str = "", file_path: str = "") -> tuple[str, str]:
+        combined = f"{file_path} {title}".upper()
+
+        # 1. Path-based matching
+        for mod, mod_data in cls.KCL_STRUCTURE.items():
+            if f"/{mod}/" in file_path.upper() or f"\\{mod}\\" in file_path.upper():
+                for blk in mod_data["blocks"].keys():
+                    blk_clean = blk.replace(" ", "_")
+                    if f"/{blk}/" in file_path.upper() or f"/{blk_clean}/" in file_path.upper():
+                        return mod, blk
+                # Check title for block keyword
+                for blk in mod_data["blocks"].keys():
+                    if re.search(rf"\b{blk}\b", combined):
+                        return mod, blk
+                return mod, list(mod_data["blocks"].keys())[0]
+
+        # 2. Block prefix matching in title or file path
+        if re.search(r"\b(ACRS\d*L?)\b", combined):
+            return "PAS", "ACRS"
+        if re.search(r"\b(PCRS\d*L?)\b", combined):
+            return "PAS", "PCRS"
+        if re.search(r"\b(FAH\d*L?)\b", combined):
+            return "PAS", "FAH"
+        if re.search(r"\b(FPP\d*L?|FPP[-_]?\d+)\b", combined):
+            return "PAS", "FPP"
+        if re.search(r"\b(AGRS\d*L?)\b", combined):
+            return "PAS", "AGRS"
+        if re.search(r"\b(PGRS\d*L?)\b", combined):
+            return "PAS", "PGRS"
+        if re.search(r"\b(AMS\d*L?)\b", combined):
+            return "PAS", "AMS"
+        if "CRANIAL" in combined:
+            return "PAS", "Cranial Nerves"
+        if re.search(r"\b(MCB\d*L?|MCB[-_]?\d+)\b", combined):
+            return "FBS", "MCB"
+        if re.search(r"\b(NBSS\d*L?)\b", combined):
+            return "FBS", "NBSS"
+        if re.search(r"\b(NAM\d*L?)\b", combined):
+            return "FBS", "NAM"
+        if re.search(r"\b(DH\d*L?)\b", combined):
+            return "FBS", "DH"
+        if re.search(r"\b(IAI\d*L?)\b", combined):
+            return "FBS", "IAI"
+        if re.search(r"\b(EAB\d*L?)\b", combined):
+            return "FBS", "EAB"
+        if re.search(r"\b(GEN\d*L?)\b", combined):
+            return "FBS", "GEN"
+        if "CLINICAL" in combined or "SKILLS" in combined or re.search(r"\bCS\d*\b", combined):
+            return "IVBCP", "Clinical Skills"
+        if "ETHICS" in combined or "LAW" in combined or re.search(r"\bHV\d*\b", combined) or "VALUES" in combined:
+            return "IVBCP", "Human Values"
+        if "4MBBS101" in combined or "4MBBS105" in combined:
+            return "FBS", "MCB"
+        if "4MBBS102" in combined or "4MBBS106" in combined:
+            return "PAS", "FAH"
+        if "4MBBS104" in combined or "4MBBS103" in combined:
+            return "IVBCP", "Human Values"
+
+        return "General", "General"
+
+    def save_note(self, title: str, content: str, module: str = "", block: str = "", source_file: str = "", note_id: str = "") -> dict:
+        self._ensure_storage()
+        now_iso = datetime.now().isoformat()
+        index_data = self._load_index()
+
+        existing = None
+        if note_id and "notes" in index_data and note_id in index_data["notes"]:
+            existing = index_data["notes"][note_id]
+            slug = note_id
+            clean_title = (title or existing.get("title") or "Untitled Lecture Note").strip()
+            module = module or existing.get("module") or "General"
+            block = block or existing.get("block") or "General"
+            source_file = source_file or existing.get("source_file", "")
+            created_at = existing.get("created_at", now_iso)
+        else:
+            clean_title = (title or "Untitled Lecture Note").strip()
+            # Clean title from any Celcat boilerplate
+            clean_title = re.sub(r"^\s*Event\s*type\s*:[^:]*Description\s*:\s*", "", clean_title, flags=re.IGNORECASE).strip()
+            clean_title = re.sub(r"^\s*(?:Event\s*type|Title|Topic|Subject|Description)\s*:\s*", "", clean_title, flags=re.IGNORECASE).strip()
+
+            if not module or not block or module not in self.KCL_STRUCTURE:
+                det_mod, det_blk = self.detect_module_and_block(clean_title, source_file)
+                module = module or det_mod
+                block = block or det_blk
+
+            # Build stable note ID / slug
+            slug = re.sub(r"[^a-zA-Z0-9_\-]+", "_", f"{module}_{block}_{clean_title}").lower().strip("_")
+            if not slug:
+                slug = f"note_{int(time.time())}"
+
+            created_at = index_data.get("notes", {}).get(slug, {}).get("created_at", now_iso)
+
+        clean_title = re.sub(r"^\s*Event\s*type\s*:[^:]*Description\s*:\s*", "", clean_title, flags=re.IGNORECASE).strip()
+        clean_title = re.sub(r"^\s*(?:Event\s*type|Title|Topic|Subject|Description)\s*:\s*", "", clean_title, flags=re.IGNORECASE).strip()
+
+        mod_info = self.KCL_STRUCTURE.get(module, self.KCL_STRUCTURE["General"])
+        mod_name = mod_info["name"]
+        blk_name = mod_info["blocks"].get(block, block)
+
+        word_count = len(re.findall(r"\b\w+\b", content or ""))
+
+        # Extract first 140 chars of text for preview snippet
+        raw_text = re.sub(r"[#*_`\[\]\(\)\<\>]", " ", content or "").strip()
+        snippet = " ".join(raw_text.split()[:25])
+        if len(snippet) > 120:
+            snippet = snippet[:117] + "..."
+
+        if existing and existing.get("md_path") and Path(existing["md_path"]).parent.exists():
+            md_file = Path(existing["md_path"])
+            json_file = Path(existing.get("json_path", str(md_file).replace(".md", ".json")))
+        else:
+            blk_folder = self.base_dir / module / block.replace(" ", "_")
+            blk_folder.mkdir(parents=True, exist_ok=True)
+            md_file = blk_folder / f"{slug}.md"
+            json_file = blk_folder / f"{slug}.json"
+
+        note_meta = {
+            "id": slug,
+            "title": clean_title,
+            "module": module,
+            "module_name": mod_name,
+            "block": block,
+            "block_name": blk_name,
+            "source_file": source_file,
+            "created_at": created_at,
+            "updated_at": now_iso,
+            "word_count": word_count,
+            "snippet": snippet,
+            "search_text": raw_text[:4000].lower(),
+            "md_path": str(md_file),
+            "json_path": str(json_file)
+        }
+
+        # Write files
+        md_file.write_text(content, encoding="utf-8")
+        json_file.write_text(json.dumps({**note_meta, "content": content}, indent=2, ensure_ascii=False), encoding="utf-8")
+
+        # Update index
+        if "notes" not in index_data:
+            index_data["notes"] = {}
+        index_data["notes"][slug] = note_meta
+        self._save_index(index_data)
+
+        return {
+            "success": True,
+            "note_id": slug,
+            "title": clean_title,
+            "module": module,
+            "module_name": mod_name,
+            "block": block,
+            "block_name": blk_name,
+            "updated_at": now_iso,
+            "word_count": word_count,
+            "snippet": snippet
+        }
+
+    def get_diagrams_dir(self, slug: str, module: str = "", block: str = "", md_path: str = "") -> Path:
+        """Returns the dedicated directory on disk storing cached slide diagrams for this note."""
+        if md_path:
+            p = Path(md_path)
+            if p.parent.exists():
+                d = p.parent / f"{slug}_diagrams"
+                d.mkdir(parents=True, exist_ok=True)
+                return d
+        mod = module or "General"
+        blk = (block or "General").replace(" ", "_")
+        d = self.base_dir / mod / blk / f"{slug}_diagrams"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    def get_note(self, note_id: str) -> dict:
+        index_data = self._load_index()
+        meta = index_data.get("notes", {}).get(note_id)
+        if not meta:
+            # Fallback search by ID or title
+            for k, v in index_data.get("notes", {}).items():
+                if k == note_id or v.get("title") == note_id:
+                    meta = v
+                    break
+
+        if not meta:
+            return {"success": False, "error": f"Note '{note_id}' not found in in-app library."}
+
+        md_path = Path(meta.get("md_path", ""))
+        content = ""
+        if md_path.exists():
+            try:
+                content = md_path.read_text(encoding="utf-8")
+            except Exception as e:
+                return {"success": False, "error": f"Error reading note content: {e}"}
+        else:
+            json_path = Path(meta.get("json_path", ""))
+            if json_path.exists():
+                try:
+                    payload = json.loads(json_path.read_text(encoding="utf-8"))
+                    content = payload.get("content", "")
+                except Exception:
+                    pass
+
+        # Load persisted slide diagram images from note's diagrams directory
+        diagrams: dict[int, str] = {}
+        try:
+            slug = meta.get("id", note_id)
+            diag_dir = self.get_diagrams_dir(slug, meta.get("module", ""), meta.get("block", ""), meta.get("md_path", ""))
+            if diag_dir.exists():
+                for p in diag_dir.glob("slide_*.png"):
+                    m = re.search(r"slide_(\d+)\.png", p.name)
+                    if m:
+                        try:
+                            s_num = int(m.group(1))
+                            b64 = base64.b64encode(p.read_bytes()).decode("ascii")
+                            diagrams[s_num] = f"data:image/png;base64,{b64}"
+                        except Exception as read_err:
+                            print(f"[get_note] Error reading cached diagram {p}: {read_err}")
+        except Exception as diag_err:
+            print(f"[get_note] Error loading note diagrams: {diag_err}")
+
+        return {
+            "success": True,
+            "note": {
+                **meta,
+                "content": content
+            },
+            "diagrams": diagrams
+        }
+
+    def list_notes(self, module: str = "", block: str = "", search: str = "") -> dict:
+        index_data = self._load_index()
+        all_notes = list(index_data.get("notes", {}).values())
+
+        # Sort newest first
+        all_notes.sort(key=lambda x: x.get("updated_at", ""), reverse=True)
+
+        # Compute counts per module & block
+        counts: dict[str, dict] = {}
+        for mod, mdata in self.KCL_STRUCTURE.items():
+            counts[mod] = {"total": 0, "blocks": {blk: 0 for blk in mdata["blocks"]}}
+
+        for n in all_notes:
+            m = n.get("module", "General")
+            b = n.get("block", "General")
+            if m in counts:
+                counts[m]["total"] += 1
+                if b in counts[m]["blocks"]:
+                    counts[m]["blocks"][b] += 1
+                else:
+                    counts[m]["blocks"][b] = 1
+
+        filtered = []
+        search_lower = (search or "").strip().lower()
+        for n in all_notes:
+            if module and n.get("module") != module:
+                continue
+            if block and n.get("block") != block:
+                continue
+            if search_lower:
+                title = n.get("title", "").lower()
+                snippet = n.get("snippet", "").lower()
+                blk = n.get("block", "").lower()
+                mod = n.get("module", "").lower()
+                stext = n.get("search_text", "").lower()
+                if (search_lower not in title and search_lower not in snippet and 
+                    search_lower not in blk and search_lower not in mod and 
+                    search_lower not in stext):
+                    continue
+            filtered.append(n)
+
+        return {
+            "success": True,
+            "total_count": len(all_notes),
+            "filtered_count": len(filtered),
+            "structure": self.KCL_STRUCTURE,
+            "counts": counts,
+            "notes": filtered
+        }
+
+    def delete_note(self, note_id: str) -> dict:
+        index_data = self._load_index()
+        if note_id in index_data.get("notes", {}):
+            meta = index_data["notes"].pop(note_id)
+            self._save_index(index_data)
+            try:
+                md_p = Path(meta.get("md_path", ""))
+                md_p.unlink(missing_ok=True)
+                Path(meta.get("json_path", "")).unlink(missing_ok=True)
+                if md_p.parent.exists():
+                    d_dir = md_p.parent / f"{note_id}_diagrams"
+                    if d_dir.exists():
+                        shutil.rmtree(d_dir, ignore_errors=True)
+            except Exception:
+                pass
+            return {"success": True, "note_id": note_id, "message": f"Deleted note '{meta.get('title')}'"}
+        return {"success": False, "error": f"Note '{note_id}' not found."}
+
+# ─────────────────────────────────────────────────────────────────────────────
 # 10. PYWEBVIEW API BRIDGE CLASS
 # ─────────────────────────────────────────────────────────────────────────────
 class AppAPI:
@@ -4056,12 +5306,22 @@ class AppAPI:
         self._index_engine    = KCLLectureIndexEngine(LECTURES_CACHE_DB_PATH, self._config, on_update_callback=self._on_index_updated)
         self._onedrive_engine = KCLOneDriveEngine(self._config, self._index_engine)
         self._chatbot_engine  = GeminiChatbotEngine(self._config, self._onedrive_engine, self.state, self._index_engine)
+        self._timetable_manager = KCLTimetableManager(APP_DATA_DIR / "kcl_timetable.json")
+        self._in_app_notes_manager = InAppNotesManager(SAVED_NOTES_DIR)
 
         # Initial Target Deck from config
         self.state.target_deck = self._config.get("TARGET_DECK", _CONFIG_TEMPLATE["TARGET_DECK"])
 
+        # Off-peak auto-prepare worker state
+        self._last_user_activity: float = 0.0
+        self._auto_prep_thread: Optional[threading.Thread] = None
+        self._stop_requested: bool = False
+
     def set_window(self, window: webview.Window):
         self._window = window
+        if not self._auto_prep_thread or not self._auto_prep_thread.is_alive():
+            self._auto_prep_thread = threading.Thread(target=self._auto_prepare_loop, daemon=True)
+            self._auto_prep_thread.start()
 
     def _notify_frontend(self, event_name: str, payload: dict):
         if self._window:
@@ -4103,6 +5363,9 @@ class AppAPI:
         threading.Thread(target=self._background_sync_index, daemon=True).start()
         # Start background update check on startup
         threading.Thread(target=self._background_check_updates, daemon=True).start()
+        # Start background timetable sync if subscription URL configured
+        if self._config.get("TIMETABLE_URL"):
+            threading.Thread(target=self._background_sync_timetable, daemon=True).start()
         return {
             "version": CURRENT_VERSION,
             "target_deck": self.state.target_deck,
@@ -4129,9 +5392,596 @@ class AppAPI:
         except Exception as exc:
             print(f"Background update check note: {exc}")
 
+    def _background_sync_timetable(self):
+        try:
+            url = self._config.get("TIMETABLE_URL", "").strip()
+            if url:
+                res = self._timetable_manager.sync_from_url(url)
+                self._notify_frontend("timetable-synced", {
+                    "success": True,
+                    "view": self._timetable_manager.get_sessions_for_view("today")
+                })
+        except Exception as exc:
+            print(f"Background timetable sync note: {exc}")
+
     def check_for_updates(self) -> dict:
         """Query GitHub Releases for the latest Synapse release."""
         return check_github_update()
+
+    # ── Home Dashboard & KCL Timetable ───────────────────────────────────────
+    def get_home_dashboard(self) -> dict:
+        return {
+            "timetable": self.get_timetable_sessions("today"),
+            "daily_fact": self.get_daily_fledge_fact(force_refresh=False),
+            "recent_lectures": self.get_recent_lectures(),
+            "anki_stats": self.get_anki_study_stats(),
+            "timetable_url": self._config.get("TIMETABLE_URL", "").strip(),
+            "user_name": self._config.get("USER_NAME", "").strip()
+        }
+
+    def sync_timetable_url(self, url: str = "") -> dict:
+        url_clean = (url or "").strip()
+        if not url_clean:
+            url_clean = self._config.get("TIMETABLE_URL", "").strip()
+        if not url_clean:
+            return {
+                "success": False,
+                "error": "No timetable subscription URL provided. Paste your link from mytimetable.kcl.ac.uk."
+            }
+
+        try:
+            res = self._timetable_manager.sync_from_url(url_clean)
+            self._config.set("TIMETABLE_URL", res["url"])
+            return {
+                "success": True,
+                "url": res["url"],
+                "total_events": res["total_events"],
+                "view": self.get_timetable_sessions("today")
+            }
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
+
+    def upload_timetable_dialog(self) -> dict:
+        if not self._window:
+            return {"success": False, "error": "Window not initialized"}
+
+        result = self._window.create_file_dialog(
+            webview.FileDialog.OPEN,
+            directory=str(Path.home() / "Downloads"),
+            allow_multiple=False,
+            file_types=('iCalendar Timetable Files (*.ics)', 'All files (*.*)')
+        )
+        if not result or len(result) == 0:
+            return {"cancelled": True}
+
+        file_path = Path(result[0])
+        try:
+            with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+                content = f.read()
+            events = self._timetable_manager.parse_ics_content(content, filename=file_path.name)
+            return {
+                "success": True,
+                "filename": file_path.name,
+                "total_events": len(events),
+                "view": self.get_timetable_sessions("today")
+            }
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
+
+    def import_timetable_content(self, ics_content: str, filename: str = "MyTimetable.ics") -> dict:
+        try:
+            events = self._timetable_manager.parse_ics_content(ics_content, filename=filename)
+            return {
+                "success": True,
+                "filename": filename,
+                "total_events": len(events),
+                "view": self.get_timetable_sessions("today")
+            }
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
+
+    def _is_off_peak_time(self) -> bool:
+        now = datetime.now()
+        # Off-peak: before 12:30 local time or after 20:00 local time
+        return (now.hour < 12) or (now.hour == 12 and now.minute < 30) or (now.hour >= 20)
+
+    def mark_user_activity(self):
+        self._last_user_activity = time.time()
+
+    def _is_user_busy(self) -> bool:
+        if getattr(self, "_notes_generation_status", {}).get("active"):
+            return True
+        if time.time() - getattr(self, "_last_user_activity", 0.0) < 45.0:
+            return True
+        return False
+
+    def _find_saved_note_for_session(self, session: dict) -> Optional[dict]:
+        """Check if an In-App note has already been prepared for this timetable session."""
+        try:
+            index_data = self._in_app_notes_manager._load_index()
+            saved_notes = index_data.get("notes", {})
+            if not saved_notes:
+                return None
+
+            lec_code = (session.get("lec_code") or "").upper().strip()
+            topic = (session.get("clean_title") or "").strip().lower()
+            code = (session.get("code") or "").upper().strip()
+
+            for note_id, note in saved_notes.items():
+                title_low = (note.get("title") or "").strip().lower()
+                source_file = (note.get("source_file") or "").upper()
+                if lec_code and (lec_code in title_low.upper() or lec_code in source_file):
+                    return {"id": note_id, "title": note.get("title", "")}
+                if topic and len(topic) > 5 and topic in title_low:
+                    return {"id": note_id, "title": note.get("title", "")}
+                if code and code in title_low.upper():
+                    return {"id": note_id, "title": note.get("title", "")}
+        except Exception as e:
+            print(f"[_find_saved_note_for_session] Error: {e}")
+        return None
+
+    def get_auto_prepare_status(self) -> dict:
+        enabled = bool(self._config.get("AUTO_PREPARE_NOTES", True))
+        is_off_peak = self._is_off_peak_time()
+        label = "Auto-Prep: Active (Off-peak)" if (enabled and is_off_peak) else ("Auto-Prep: Scheduled (Off-peak)" if enabled else "Auto-Prep: Disabled")
+        return {
+            "enabled": enabled,
+            "is_off_peak": is_off_peak,
+            "label": label
+        }
+
+    def set_auto_prepare_notes(self, enabled: bool) -> dict:
+        self._config.set("AUTO_PREPARE_NOTES", bool(enabled))
+        status = self.get_auto_prepare_status()
+        self._notify_frontend("auto-prepare-update", status)
+        return {"success": True, "status": status}
+
+    def _auto_prepare_loop(self):
+        time.sleep(12)  # Delay after startup
+        while not getattr(self, "_stop_requested", False):
+            try:
+                enabled = self._config.get("AUTO_PREPARE_NOTES", True)
+                if enabled and self._is_off_peak_time():
+                    if not self._is_user_busy():
+                        self._run_auto_prepare_cycle()
+            except Exception as e:
+                print(f"[AutoPrepareNotes] Background worker note: {e}")
+            time.sleep(300)  # Check every 5 minutes
+
+    def _run_auto_prepare_cycle(self):
+        today_data = self._timetable_manager.get_sessions_for_view("today")
+        tomorrow_data = self._timetable_manager.get_sessions_for_view("tomorrow")
+        all_sessions = (today_data.get("sessions") or []) + (tomorrow_data.get("sessions") or [])
+
+        for s in all_sessions:
+            if self._is_user_busy():
+                print("[AutoPrepareNotes] User activity detected; yielding background pre-generation.")
+                return
+            if self._find_saved_note_for_session(s):
+                continue
+
+            lec_code = s.get("lec_code") or ""
+            topic = s.get("clean_title") or s.get("raw_summary") or ""
+
+            slide_info = self.find_slides_for_session(
+                session_code=s.get("code", ""),
+                session_summary=s.get("raw_summary", ""),
+                module_code=s.get("module_code", ""),
+                activity_title=s.get("activity_title", ""),
+                topic_title=topic,
+                lec_code=lec_code
+            )
+
+            if not (slide_info and slide_info.get("found")):
+                continue
+
+            f_path = Path(slide_info["file_path"])
+            if not f_path.exists() or not f_path.suffix.lower().endswith(".pptx"):
+                continue
+
+            try:
+                prs = Presentation(str(f_path))
+                if len(prs.slides) <= 1:
+                    continue
+            except Exception:
+                continue
+
+            if self._is_user_busy():
+                return
+
+            lec_title = s.get("clean_title") or lec_code or f_path.stem
+            print(f"[AutoPrepareNotes] Quietly pre-generating notes for '{lec_title}' ({f_path.name})...")
+
+            try:
+                def _bg_status_check(msg, model=None):
+                    if self._is_user_busy():
+                        raise InterruptedError("User activity detected; yielding background pre-generation.")
+
+                notes, model_used = self._notes_engine.generate_lecture_notes(
+                    prs,
+                    lec_title,
+                    status_callback=_bg_status_check
+                )
+
+                if self._is_user_busy():
+                    return
+
+                mod, blk = InAppNotesManager.detect_module_and_block(lec_title, str(f_path))
+                save_res = self._in_app_notes_manager.save_note(
+                    title=lec_title,
+                    content=notes,
+                    module=mod,
+                    block=blk,
+                    source_file=f_path.name
+                )
+
+                if save_res.get("success"):
+                    note_id = save_res.get("note_id", "")
+                    diag_dir = self._in_app_notes_manager.get_diagrams_dir(note_id, mod, blk)
+                    slide_tags = re.findall(r"\(\s*slides?\s+([0-9\s,\-–and]+?):", notes, re.IGNORECASE)
+                    all_s_nums = set()
+                    for tag in slide_tags:
+                        for num_match in re.findall(r"\d+", tag):
+                            n = int(num_match)
+                            if 1 < n <= len(prs.slides):
+                                all_s_nums.add(n)
+                    for s_num in all_s_nums:
+                        try:
+                            png_bytes = self._notion_engine.get_best_slide_image(prs, s_num, pptx_path=f_path)
+                            if png_bytes and diag_dir:
+                                (diag_dir / f"slide_{s_num}.png").write_bytes(png_bytes)
+                        except Exception:
+                            pass
+
+                    print(f"[AutoPrepareNotes] Notes ready for '{lec_title}' saved to {mod} · {blk} ✓")
+                    self._notify_frontend("timetable-update", {
+                        "type": "note_ready",
+                        "note_id": note_id,
+                        "session_code": s.get("code")
+                    })
+                    time.sleep(15)  # Pace between lectures
+            except InterruptedError:
+                print(f"[AutoPrepareNotes] Yielded generation for '{lec_title}' due to user activity.")
+                return
+            except Exception as ge:
+                print(f"[AutoPrepareNotes] Error pre-generating notes for '{lec_title}': {ge}")
+
+    def get_timetable_sessions(self, view_mode: str = "today", target_date: str = "") -> dict:
+        data = self._timetable_manager.get_sessions_for_view(view_mode, target_date=target_date)
+        sessions = data.get("sessions", [])
+        for s in sessions:
+            saved = self._find_saved_note_for_session(s)
+            if saved:
+                s["has_saved_note"] = True
+                s["saved_note_id"] = saved["id"]
+                s["saved_note_title"] = saved["title"]
+            else:
+                s["has_saved_note"] = False
+        for group in data.get("week_grouped", []):
+            for s in group.get("sessions", []):
+                saved = self._find_saved_note_for_session(s)
+                if saved:
+                    s["has_saved_note"] = True
+                    s["saved_note_id"] = saved["id"]
+                    s["saved_note_title"] = saved["title"]
+                else:
+                    s["has_saved_note"] = False
+        data["auto_prepare_status"] = self.get_auto_prepare_status()
+        return data
+
+    def find_slides_for_session(self, session_code: str = "", session_summary: str = "", module_code: str = "", activity_title: str = "", topic_title: str = "", lec_code: str = "") -> dict:
+        code_clean = (session_code or "").strip().upper()
+        summary_clean = (session_summary or "").strip()
+        act_clean = (activity_title or "").strip()
+        topic_clean = (topic_title or "").strip()
+        mod_clean = (module_code or "").strip().upper()
+        target_lec = (lec_code or "").strip().upper()
+
+        # If target_lec was not passed explicitly, extract it from session_code, topic_clean, or summary_clean
+        if not target_lec:
+            for cand in [code_clean, topic_clean, summary_clean]:
+                m = re.search(r"\b([A-Z]{3,5}[-_]?\d{1,3}[A-Za-z]?)\b", cand)
+                if m:
+                    c_up = m.group(1).upper().replace("-", "")
+                    if not c_up.startswith("4MBBS"):
+                        target_lec = c_up
+                        break
+
+        # Candidate tokens for the specific lecture code (e.g. ACRS04L, ACRS04, ACRS 04, ACRS 4)
+        lec_tokens = []
+        if target_lec:
+            lec_tokens.append(target_lec)
+            m_code = re.match(r"^([A-Z]+)(\d+)([A-Z]?)$", target_lec)
+            if m_code:
+                prefix, num_str, suffix = m_code.groups()
+                num_int = int(num_str)
+                lec_tokens.extend([
+                    f"{prefix}{num_str}",
+                    f"{prefix} {num_str}",
+                    f"{prefix}-{num_str}",
+                    f"{prefix}{num_int}",
+                    f"{prefix} {num_int}",
+                    f"{prefix}-{num_int}",
+                ])
+                if suffix:
+                    lec_tokens.extend([
+                        f"{prefix}{num_str}{suffix}",
+                        f"{prefix} {num_str}{suffix}",
+                        f"{prefix}{num_int}{suffix}",
+                    ])
+
+        # Detect target module abbreviation (PAS, FBS, IVBCP)
+        target_mod = ""
+        if mod_clean in KCLTimetableManager.KCL_MODULE_MAP:
+            target_mod = KCLTimetableManager.KCL_MODULE_MAP[mod_clean][0].upper()
+        elif "PAS" in summary_clean.upper() or "PHYSIOLOGY" in summary_clean.upper():
+            target_mod = "PAS"
+        elif "FBS" in summary_clean.upper() or "BIOMEDICAL" in summary_clean.upper():
+            target_mod = "FBS"
+        elif "IVBCP" in summary_clean.upper() or "VALUES" in summary_clean.upper():
+            target_mod = "IVBCP"
+
+        # Topic keywords - filter out common noise words
+        stop_words = {
+            "and", "the", "for", "with", "without", "part", "lecture", "tutorial", "session",
+            "campus", "theatre", "hall", "centre", "room", "kcl", "date", "group", "groups",
+            "staff", "location", "additional", "information", "thursday", "friday", "monday",
+            "tuesday", "wednesday", "november", "december", "january", "february", "march",
+            "april", "may", "june", "july", "august", "september", "october", "system",
+            "systems", "introduction", "basics", "case", "based", "discussion", "answers",
+            "keats", "mbbs", "year", "clinical", "skills", "ethics", "values"
+        }
+        topic_words = [
+            w.lower() for w in re.findall(r'[A-Za-z0-9]+', topic_clean)
+            if len(w) > 3 and w.lower() not in stop_words and not re.match(r"^4mbbs", w.lower())
+        ]
+
+        display_name = topic_clean or target_lec or act_clean or "this session"
+
+        def score_candidate(filename: str, row_mod: str, file_path_str: str) -> int:
+            fn_up = filename.upper()
+            fn_low = filename.lower()
+            fp_up = file_path_str.upper()
+            score = 0
+
+            # 1. Primary match: Specific lecture code (e.g. ACRS04L, ACRS04, ACRS 04)
+            has_lec_match = False
+            for tok in lec_tokens:
+                tok_up = tok.upper()
+                if tok_up in fn_up:
+                    score += 50
+                    has_lec_match = True
+                    break
+
+            # 2. Module alignment bonus (PAS, FBS, IVBCP)
+            if target_mod and (target_mod == row_mod or f"/{target_mod}/" in fp_up):
+                score += 5
+
+            # 3. Topic keyword matches
+            matched_words = 0
+            for tw in topic_words:
+                if tw in fn_low:
+                    score += 15
+                    matched_words += 1
+
+            # Strict gating:
+            # - If a specific lecture code exists (e.g. ACRS04L), require matching the lecture code OR >= 2 specific topic words.
+            # - Never allow generic module match or single generic word to trigger a match.
+            if target_lec and not has_lec_match and matched_words < 2:
+                return 0
+            if not target_lec and matched_words < 1:
+                return 0
+
+            return score
+
+        # 1. Search in SQLite index
+        try:
+            con = self._index_engine._get_connection()
+            cur = con.cursor()
+            cur.execute("SELECT filename, file_path, slide_count, module, block FROM lectures")
+            rows = [dict(r) for r in cur.fetchall()]
+            con.close()
+
+            best_row = None
+            best_score = 0
+            for r in rows:
+                score = score_candidate(r["filename"], (r.get("module") or "").upper(), r.get("file_path") or "")
+                if score > best_score:
+                    best_score = score
+                    best_row = r
+
+            if best_row and best_score >= 30:
+                return {
+                    "found": True,
+                    "file_path": best_row["file_path"],
+                    "filename": best_row["filename"],
+                    "slide_count": best_row["slide_count"],
+                    "module": best_row["module"],
+                    "block": best_row["block"]
+                }
+        except Exception as e:
+            print(f"[find_slides_for_session] DB search note: {e}")
+
+        # 2. Fallback search in LECTURES_DIR and OneDrive directories
+        candidate_dirs = [
+            Path(self._config.get("LECTURES_DIR", "./Lectures_OneDrive")).expanduser(),
+            Path.home() / "Library/CloudStorage/OneDrive-King'sCollegeLondon",
+            Path.home() / "OneDrive - King's College London",
+            Path.home() / "Downloads"
+        ]
+
+        best_fs_path = None
+        best_fs_score = 0
+        for base_dir in candidate_dirs:
+            try:
+                if not base_dir.exists():
+                    continue
+                for ext in ("*.pptx", "*.pdf"):
+                    for p in base_dir.rglob(ext):
+                        if p.name.startswith("~$"):
+                            continue
+                        score = score_candidate(p.name, target_mod, str(p))
+                        if score > best_fs_score:
+                            best_fs_score = score
+                            best_fs_path = p
+            except Exception as e:
+                print(f"[find_slides_for_session] FS search note: {e}")
+
+        if best_fs_path and best_fs_score >= 30:
+            return {
+                "found": True,
+                "file_path": str(best_fs_path.resolve()),
+                "filename": best_fs_path.name,
+                "slide_count": 0,
+                "module": target_mod,
+                "block": ""
+            }
+
+        return {
+            "found": False,
+            "session_title": display_name,
+            "message": f"No lecture slides found matching '{display_name}'.",
+            "keats_note": "Note: Lecture slides must be downloaded from KEATS and placed into your connected OneDrive folder (~/OneDrive - King's College London) for Synapse to automatically locate and index them."
+        }
+
+    def get_daily_fledge_fact(self, force_refresh: bool = False) -> dict:
+        return self.get_daily_pigeon_fact(force_refresh=force_refresh)
+
+    def get_daily_pigeon_fact(self, force_refresh: bool = False) -> dict:
+        cache_file = APP_DATA_DIR / "daily_fact_cache.json"
+        today_str = datetime.now().strftime("%Y-%m-%d")
+
+        if not force_refresh and cache_file.exists():
+            try:
+                with open(cache_file, "r", encoding="utf-8") as f:
+                    cached = json.load(f)
+                    if cached.get("date") == today_str and cached.get("fact_data"):
+                        return {"success": True, "fact": cached["fact_data"], "date": today_str, "cached": True}
+            except Exception:
+                pass
+
+        fact_obj = None
+        if force_refresh:
+            try:
+                prompt = """You are Dr. Fledge, the mascot and expert medical tutor for MBBS Year 1 students at King's College London (Foundations of Biomedical Sciences / Physiology and Anatomy of Systems).
+Generate one high-yield, memorable medical pearl or physiological/anatomical fact for today.
+Topics should focus on high-yield MBBS Year 1 content:
+- Anatomical relations (e.g. neurovascular pathways, fascial compartments, landmarks)
+- Systemic physiology mechanisms (cardiovascular, respiratory, renal, GI)
+- Foundational biochemistry rate-limiting enzymes or pharmacology receptors
+
+Return a strictly valid JSON object matching this schema:
+{
+  "topic": "Anatomy · Neurovascular",
+  "title": "Recurrent Laryngeal Nerve Asymmetry",
+  "fact": "The left recurrent laryngeal nerve loops under the aortic arch, while the right loops under the right subclavian artery.",
+  "clinical_pearl": "Left recurrent laryngeal palsy indicates mediastinal pathology, causing hoarseness and bovine cough.",
+  "pigeon_quote": "Left loops low! Protect those vocal cords and lock in. 🐦🩺",
+  "tags": ["Anatomy", "Neurovascular", "High-Yield"]
+}
+"""
+                raw = self._cards_engine._call_gemini_rest(
+                    prompt,
+                    preferred_model="gemini-3.5-flash-lite",
+                    task_label="Dr Fledge Daily Fact"
+                )
+                m = re.search(r"\{.*\}", raw, re.DOTALL)
+                if m:
+                    fact_obj = json.loads(m.group(0))
+            except Exception as e:
+                print(f"[DailyFact] Gemini generation note: {e}")
+
+        if not fact_obj or not fact_obj.get("fact"):
+            day_of_year = datetime.now().timetuple().tm_yday
+            fact_obj = CURATED_PIGEON_FACTS[day_of_year % len(CURATED_PIGEON_FACTS)]
+
+        try:
+            cache_file.parent.mkdir(parents=True, exist_ok=True)
+            with open(cache_file, "w", encoding="utf-8") as f:
+                json.dump({"date": today_str, "fact_data": fact_obj}, f, indent=2)
+        except Exception:
+            pass
+
+        return {"success": True, "fact": fact_obj, "date": today_str, "cached": not force_refresh}
+
+    def get_recent_lectures(self) -> list[dict]:
+        recent = self._config.get("RECENT_LECTURES", [])
+        if not isinstance(recent, list):
+            recent = []
+
+        if len(recent) < 3:
+            try:
+                con = self._index_engine._get_connection()
+                cur = con.cursor()
+                cur.execute("SELECT filename, file_path, slide_count, block FROM lectures ORDER BY mtime DESC LIMIT 3")
+                rows = cur.fetchall()
+                con.close()
+                existing_paths = {r.get("path") for r in recent}
+                for r in rows:
+                    if r["file_path"] not in existing_paths and len(recent) < 3:
+                        recent.append({
+                            "title": Path(r["filename"]).stem,
+                            "filename": r["filename"],
+                            "path": r["file_path"],
+                            "slide_count": r["slide_count"],
+                            "last_opened": "Available in OneDrive"
+                        })
+            except Exception:
+                pass
+
+        return recent[:3]
+
+    def get_anki_study_stats(self) -> dict:
+        connected = AnkiBridge.is_connected()
+        if not connected:
+            return {
+                "connected": False,
+                "due_today": 0,
+                "reviewed_today": 0,
+                "new_cards": 0,
+                "total_cards": 0,
+                "deck": self.state.target_deck or "MBBS Jassem A.",
+                "message": "Anki desktop is offline"
+            }
+
+        target_deck = self.state.target_deck or self._config.get("DEFAULT_PARENT_DECK", "MBBS Jassem A.")
+        due_count = 0
+        rev_count = 0
+        new_count = 0
+        total_count = 0
+
+        res_due = AnkiBridge.invoke("findCards", query=f'deck:"{target_deck}" is:due')
+        if res_due.get("success") and isinstance(res_due.get("result"), list):
+            due_count = len(res_due["result"])
+        else:
+            res_due_all = AnkiBridge.invoke("findCards", query="is:due")
+            if res_due_all.get("success") and isinstance(res_due_all.get("result"), list):
+                due_count = len(res_due_all["result"])
+
+        res_rev = AnkiBridge.invoke("findCards", query="rated:1")
+        if res_rev.get("success") and isinstance(res_rev.get("result"), list):
+            rev_count = len(res_rev["result"])
+
+        res_new = AnkiBridge.invoke("findCards", query=f'deck:"{target_deck}" is:new')
+        if res_new.get("success") and isinstance(res_new.get("result"), list):
+            new_count = len(res_new["result"])
+        else:
+            res_new_all = AnkiBridge.invoke("findCards", query="is:new")
+            if res_new_all.get("success") and isinstance(res_new_all.get("result"), list):
+                new_count = len(res_new_all["result"])
+
+        res_tot = AnkiBridge.invoke("findCards", query=f'deck:"{target_deck}"')
+        if res_tot.get("success") and isinstance(res_tot.get("result"), list):
+            total_count = len(res_tot["result"])
+
+        return {
+            "connected": True,
+            "due_today": due_count,
+            "reviewed_today": rev_count,
+            "new_cards": new_count,
+            "total_cards": total_count,
+            "deck": target_deck
+        }
 
     # ── Presentation Loading ─────────────────────────────────────────────────
     def open_pptx_dialog(self) -> dict:
@@ -4172,6 +6022,22 @@ class AppAPI:
             # Preload slides and render with explicit presentation mapping
             self._render_engine.load_presentation(pptx_path, prs=prs)
             slide_data = self._load_slide(0)
+
+            # Persist to RECENT_LECTURES in config
+            recent = self._config.get("RECENT_LECTURES", [])
+            if not isinstance(recent, list):
+                recent = []
+            recent = [r for r in recent if r.get("path") != str(pptx_path.resolve())]
+            recent.insert(0, {
+                "title": pptx_path.stem,
+                "filename": pptx_path.name,
+                "path": str(pptx_path.resolve()),
+                "slide_count": self.state.total_slides,
+                "last_opened": datetime.now().strftime("%d %b, %H:%M")
+            })
+            recent = recent[:10]
+            self._config.set("RECENT_LECTURES", recent)
+            self._config.save({"RECENT_LECTURES": recent})
 
             return {
                 "success": True,
@@ -4867,10 +6733,69 @@ class AppAPI:
 
         try:
             AnkiBridge.create_deck_if_missing(target_deck)
+
+            # Query available models in Anki to dynamically adapt note types and field names
+            available_models = []
+            m_res = AnkiBridge.invoke("modelNames")
+            if m_res.get("success") and isinstance(m_res.get("result"), list):
+                available_models = m_res["result"]
+
+            # Resolve Basic model
+            basic_model = "1. Basic" if "1. Basic" in available_models else (
+                "Basic" if "Basic" in available_models else None
+            )
+            if not basic_model:
+                for m in available_models:
+                    if "basic" in m.lower():
+                        basic_model = m
+                        break
+            if not basic_model:
+                basic_model = available_models[0] if available_models else "1. Basic"
+
+            # Check Basic model field names
+            b_fields_res = AnkiBridge.invoke("modelFieldNames", modelName=basic_model)
+            b_field_names = b_fields_res.get("result", []) if b_fields_res.get("success") else ["Front", "Back"]
+            b_front_field = "Front" if "Front" in b_field_names else (b_field_names[0] if b_field_names else "Front")
+            b_back_field = "Back" if "Back" in b_field_names else (b_field_names[1] if len(b_field_names) > 1 else "Back")
+
+            # Resolve Cloze model
+            cloze_model = "Cloze++" if "Cloze++" in available_models else (
+                "Cloze" if "Cloze" in available_models else None
+            )
+            if not cloze_model:
+                for m in available_models:
+                    if "cloze" in m.lower():
+                        cloze_model = m
+                        break
+            if not cloze_model:
+                cloze_model = "Cloze++"
+
+            # Check Cloze model field names (e.g. "Back Extra" vs standard "Extra")
+            c_fields_res = AnkiBridge.invoke("modelFieldNames", modelName=cloze_model)
+            c_field_names = c_fields_res.get("result", []) if c_fields_res.get("success") else ["Text", "Back Extra"]
+            c_text_field = "Text" if "Text" in c_field_names else (c_field_names[0] if c_field_names else "Text")
+            c_extra_field = "Back Extra" if "Back Extra" in c_field_names else (
+                "Extra" if "Extra" in c_field_names else (c_field_names[1] if len(c_field_names) > 1 else "Back Extra")
+            )
+
+            # Resolve Image Occlusion model
+            io_model = "Image Occlusion++++++" if "Image Occlusion++++++" in available_models else (
+                "Image Occlusion" if "Image Occlusion" in available_models else "Image Occlusion++++++"
+            )
+
             notes_payload = []
+            dup_options = {
+                "allowDuplicate": True,
+                "duplicateScope": "deck",
+                "duplicateScopeOptions": {
+                    "deckName": target_deck,
+                    "checkChildren": False,
+                    "checkAllModels": False
+                }
+            }
 
             for c in self.state.normal_cards:
-                ctype = c.get("type", "Cloze++")
+                ctype = c.get("type", "1. Basic")
                 front = re.sub(r"\s*\[Lecture:[^\]]*\]", "", c.get("front", "") or c.get("text", "")).strip()
                 back = re.sub(r"\s*\[Lecture:[^\]]*\]", "", c.get("back", "") or c.get("extra", "")).strip()
 
@@ -4883,41 +6808,22 @@ class AppAPI:
                 ]):
                     continue
 
-                dup_options = {
-                    "allowDuplicate": True,
-                    "duplicateScope": "deck",
-                    "duplicateScopeOptions": {
-                        "deckName": target_deck,
-                        "checkChildren": False,
-                        "checkAllModels": False
-                    }
-                }
-
                 if ctype in ("Cloze++", "Cloze"):
                     notes_payload.append({
                         "deckName": target_deck,
-                        "modelName": "Cloze++",
-                        "fields": {"Text": front, "Back Extra": back},
+                        "modelName": cloze_model,
+                        "fields": {c_text_field: front, c_extra_field: back},
                         "options": dup_options,
                         "tags": ["MBBS", "LectureCards"]
                     })
                 else:
                     notes_payload.append({
                         "deckName": target_deck,
-                        "modelName": "1. Basic",
-                        "fields": {"Front": front, "Back": back},
+                        "modelName": basic_model,
+                        "fields": {b_front_field: front, b_back_field: back},
                         "options": dup_options,
                         "tags": ["MBBS", "LectureCards"]
                     })
-
-            available_models = []
-            m_res = AnkiBridge.invoke("modelNames")
-            if m_res.get("success") and isinstance(m_res.get("result"), list):
-                available_models = m_res["result"]
-
-            io_model = "Image Occlusion++++++" if "Image Occlusion++++++" in available_models else (
-                "Image Occlusion" if "Image Occlusion" in available_models else "Image Occlusion++++++"
-            )
 
             uid = uuid.uuid4().hex[:8]
             for idx, occ in enumerate(self.state.queued_occlusion_cards):
@@ -4947,27 +6853,42 @@ class AppAPI:
                 return {"success": False, "error": "No valid cards to push."}
 
             res = AnkiBridge.add_notes(notes_payload)
-            if res.get("success"):
-                results = res.get("result") or []
-                created_count = sum(1 for nid in results if nid is not None)
-                AnkiBridge.sync()
-                return {"success": True, "count": created_count or len(notes_payload), "deck": target_deck}
+            results = res.get("result") or [] if res.get("success") else []
+            created_count = sum(1 for nid in results if nid is not None)
 
-            # Fallback: Push note-by-note so a single duplicate/problem note never blocks the entire batch
-            added_count = 0
-            last_err = res.get("error", "Unknown AnkiConnect error")
-            for note in notes_payload:
-                single_res = AnkiBridge.invoke("addNote", note=note)
-                if single_res.get("success") and single_res.get("result"):
-                    added_count += 1
-                else:
-                    last_err = single_res.get("error", last_err)
+            # If any cards were rejected by addNotes (e.g. duplicate or model mismatch),
+            # retry note-by-note to add the valid ones and collect specific error reasons
+            error_reasons = []
+            if created_count < len(notes_payload):
+                added_count = 0
+                for idx, note in enumerate(notes_payload):
+                    if idx < len(results) and results[idx] is not None:
+                        added_count += 1
+                        continue
+                    single_res = AnkiBridge.invoke("addNote", note=note)
+                    if single_res.get("success") and single_res.get("result"):
+                        added_count += 1
+                    else:
+                        err = single_res.get("error", "Unknown AnkiConnect error")
+                        if err and err not in error_reasons:
+                            error_reasons.append(err)
+                created_count = added_count
 
-            if added_count > 0:
-                AnkiBridge.sync()
-                return {"success": True, "count": added_count, "deck": target_deck}
-            else:
-                return {"success": False, "error": last_err}
+            if created_count == 0:
+                err_msg = "; ".join(error_reasons[:2]) if error_reasons else (res.get("error") or "All cards were rejected by Anki.")
+                return {"success": False, "error": f"Anki did not add any cards: {err_msg}"}
+
+            # Force Anki desktop to refresh GUI deck browser so queue counts update immediately
+            AnkiBridge.invoke("guiDeckBrowser")
+            AnkiBridge.invoke("guiReset")
+            AnkiBridge.sync()
+
+            return {
+                "success": True,
+                "count": created_count,
+                "total": len(notes_payload),
+                "deck": target_deck
+            }
         except Exception as exc:
             return {"success": False, "error": str(exc)}
 
@@ -5015,30 +6936,89 @@ class AppAPI:
             return []
         lec = self.state.pptx_path.stem if self.state.pptx_path else "Lecture"
         slides = self.state.presentation.slides
+        total_slides = len(slides)
         blueprint = self._cards_engine.build_lecture_blueprint(self.state.presentation, lec)
 
-        all_new = []
+        # 1. Filter eligible content slides
+        eligible_slides = []
         for i, slide in enumerate(slides):
             _, text = SlideParsEngine.extract_slide_data(slide)
             skip, _ = SlideParsEngine.should_skip_slide_for_cards(i, text)
-            if skip:
-                continue
+            if not skip and text.strip():
+                words = len(text.split())
+                max_c = 4 if words > 120 else (3 if words > 60 else 2)
+                eligible_slides.append({
+                    "slide_num": i + 1,
+                    "text": text,
+                    "max_cards": max_c
+                })
 
-            words = len(text.split())
-            max_c = 4 if words > 120 else (3 if words > 60 else 2)
-            cards = self._cards_engine.generate_cards_from_text(
-                slide_text=text,
-                slide_num=i + 1,
+        if not eligible_slides:
+            return self.state.normal_cards
+
+        # 2. Batch slides into groups of 3 to stay safely under Gemini 15 RPM
+        # (e.g. 30 slides -> ~7 API calls instead of 30, avoiding 429 quota exhaustion)
+        batch_size = 3
+        batches = [eligible_slides[j:j + batch_size] for j in range(0, len(eligible_slides), batch_size)]
+        total_batches = len(batches)
+
+        all_new = []
+        self._notify_frontend("cards-progress", {
+            "status": "start",
+            "message": f"Analyzing {len(eligible_slides)} content slides in {total_batches} batches...",
+            "current_slide": 0,
+            "total_slides": total_slides,
+            "generated": len(all_new)
+        })
+
+        for b_idx, batch in enumerate(batches):
+            start_s = batch[0]["slide_num"]
+            end_s = batch[-1]["slide_num"]
+
+            self._notify_frontend("cards-progress", {
+                "status": "processing",
+                "message": f"Generating cards for Slides {start_s}–{end_s} (Batch {b_idx + 1}/{total_batches})...",
+                "current_slide": end_s,
+                "total_slides": total_slides,
+                "generated": len(all_new)
+            })
+
+            cards = self._cards_engine.generate_cards_from_slides_batch(
+                slides_batch=batch,
                 lecture_name=lec,
                 blueprint=blueprint,
-                max_cards=max_c
+                status_callback=lambda msg, model=None: self._notify_frontend("cards-progress", {
+                    "status": "waiting",
+                    "message": msg,
+                    "current_slide": end_s,
+                    "total_slides": total_slides,
+                    "generated": len(all_new)
+                })
             )
+
             if cards:
                 all_new.extend(cards)
                 self.state.normal_cards.extend(cards)
-                self._notify_frontend("cards-progress", {"generated": len(all_new), "slide": i + 1})
-            time.sleep(0.4)
+                self._notify_frontend("cards-progress", {
+                    "status": "batch_done",
+                    "message": f"Generated {len(all_new)} cards (Slide {end_s}/{total_slides})...",
+                    "current_slide": end_s,
+                    "total_slides": total_slides,
+                    "generated": len(all_new),
+                    "new_cards": cards
+                })
 
+            # Pacing delay between batches to stay comfortably below 15 RPM
+            if b_idx < total_batches - 1:
+                time.sleep(2.0)
+
+        self._notify_frontend("cards-progress", {
+            "status": "completed",
+            "message": f"Completed! Generated {len(all_new)} cards.",
+            "current_slide": total_slides,
+            "total_slides": total_slides,
+            "generated": len(all_new)
+        })
         return self.state.normal_cards
 
     def save_card(self, idx: int, card_dict: dict) -> dict:
@@ -5119,9 +7099,27 @@ class AppAPI:
             "elapsed": 0
         })
 
+    def cancel_ai_notes_generation(self) -> dict:
+        try:
+            if hasattr(self, "_notes_engine") and hasattr(self._notes_engine, "_cards_engine") and self._notes_engine._cards_engine:
+                self._notes_engine._cards_engine._cancel_requested = True
+            self._notes_generation_status = {
+                "active": False,
+                "model": "",
+                "message": "Cancelled by user",
+                "elapsed": 0
+            }
+            return {"success": True, "message": "Generation cancelled"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
     def generate_ai_lecture_notes(self) -> dict:
+        self.mark_user_activity()
         if not self.state.presentation:
             return {"success": False, "error": "No presentation loaded. Please open a lecture first."}
+
+        if hasattr(self, "_notes_engine") and hasattr(self._notes_engine, "_cards_engine") and self._notes_engine._cards_engine:
+            self._notes_engine._cards_engine._cancel_requested = False
 
         target_model = "gemini-4-hydrogen"
         start_time = time.time()
@@ -5133,6 +7131,9 @@ class AppAPI:
         }
 
         def _on_status(msg: str, model: str = None):
+            if hasattr(self, "_notes_engine") and hasattr(self._notes_engine, "_cards_engine") and self._notes_engine._cards_engine:
+                if getattr(self._notes_engine._cards_engine, "_cancel_requested", False):
+                    raise InterruptedError("Generation cancelled by user.")
             self._notes_generation_status["message"] = msg
             if model:
                 self._notes_generation_status["model"] = model
@@ -5150,14 +7151,62 @@ class AppAPI:
             tpl_count = len(self._config.get("CUSTOM_NOTE_TEMPLATES", []) or [])
             self._notes_generation_status["active"] = False
             self._notes_generation_status["message"] = f"Finished in {elapsed_sec}s with {model_used}"
+
+            # Automatically persist to in-app library categorized by Module & Block
+            in_app_info = {}
+            cached_diagrams = {}
+            try:
+                mod, blk = InAppNotesManager.detect_module_and_block(
+                    lec_name, str(self.state.pptx_path or "")
+                )
+                save_res = self._in_app_notes_manager.save_note(
+                    title=lec_name,
+                    content=notes,
+                    module=mod,
+                    block=blk,
+                    source_file=self.state.pptx_path.name if self.state.pptx_path else ""
+                )
+                if save_res.get("success"):
+                    in_app_info = save_res
+                    note_slug = save_res.get("note_id", "")
+                    # Pre-extract all referenced diagrams and persist them to disk immediately
+                    diag_dir = self._in_app_notes_manager.get_diagrams_dir(note_slug, mod, blk)
+                    safe_src = self.state.pptx_path.stem if self.state.pptx_path else note_slug
+                    slide_tags = re.findall(r"\(\s*slides?\s+([0-9\s,\-–and]+?):", notes, re.IGNORECASE)
+                    all_s_nums = set()
+                    for tag in slide_tags:
+                        for num_match in re.findall(r"\d+", tag):
+                            n = int(num_match)
+                            if n > 1:
+                                all_s_nums.add(n)
+                    for s_num in all_s_nums:
+                        try:
+                            png_bytes = self._notion_engine.get_best_slide_image(self.state.presentation, s_num)
+                            if png_bytes:
+                                (diag_dir / f"slide_{s_num}.png").write_bytes(png_bytes)
+                                (SLIDE_CACHE_DIR / f"{safe_src}_slide_{s_num}.png").write_bytes(png_bytes)
+                                b64 = base64.b64encode(png_bytes).decode("ascii")
+                                cached_diagrams[s_num] = f"data:image/png;base64,{b64}"
+                        except Exception as d_err:
+                            print(f"[generate_ai_notes] Diagram extraction error for slide {s_num}: {d_err}")
+            except Exception as e:
+                print(f"[generate_ai_notes] Local note auto-save note: {e}")
+
             return {
                 "success": True,
                 "notes": notes,
                 "model_used": model_used or target_model,
                 "style_mode": style_mode,
                 "template_count": tpl_count,
-                "elapsed": elapsed_sec
+                "elapsed": elapsed_sec,
+                "in_app_saved": bool(in_app_info),
+                "in_app_info": in_app_info,
+                "diagrams": cached_diagrams
             }
+        except InterruptedError:
+            self._notes_generation_status["active"] = False
+            self._notes_generation_status["message"] = "Cancelled by user"
+            return {"success": False, "cancelled": True, "error": "Generation cancelled by user."}
         except Exception as exc:
             self._notes_generation_status["active"] = False
             self._notes_generation_status["message"] = f"Failed: {exc}"
@@ -5169,32 +7218,190 @@ class AppAPI:
         out_path.write_text(content, encoding="utf-8")
         return {"success": True, "filename": str(out_path.name), "path": str(out_path)}
 
-    def get_slide_diagram(self, slide_num: int) -> dict:
-        if not self.state.presentation:
-            return {"success": False, "error": "No presentation loaded"}
-        try:
-            png_bytes = self._notion_engine.get_best_slide_image(self.state.presentation, int(slide_num))
-            if png_bytes:
-                b64 = base64.b64encode(png_bytes).decode("ascii")
-                return {"success": True, "slide_num": slide_num, "data_url": f"data:image/png;base64,{b64}"}
-            return {"success": False, "error": f"No diagram found on slide {slide_num}"}
-        except Exception as exc:
-            return {"success": False, "error": str(exc)}
+    def save_in_app_note(self, title: str = "", content: str = "", module: str = "", block: str = "", source_file: str = "", note_id: str = "") -> dict:
+        if not source_file and self.state.pptx_path:
+            source_file = self.state.pptx_path.name
+        if not title and not note_id:
+            title = self.state.current_lecture_name or (self.state.pptx_path.stem if self.state.pptx_path else "")
+        if not title and not note_id and content:
+            heading_match = re.search(r"^\s*#+\s+(.+)$", content, re.MULTILINE)
+            if heading_match:
+                title = heading_match.group(1).strip()
+        if not title and not note_id:
+            title = "Lecture Note"
+        return self._in_app_notes_manager.save_note(title, content, module=module, block=block, source_file=source_file, note_id=note_id)
 
-    def get_slide_diagrams(self, slide_nums: list[int]) -> dict:
-        if not self.state.presentation:
-            return {"success": False, "diagrams": {}}
-        res = {}
-        prs = self.state.presentation
-        for s in slide_nums:
+    def get_in_app_notes(self, module: str = "", block: str = "", search: str = "") -> dict:
+        return self._in_app_notes_manager.list_notes(module=module, block=block, search=search)
+
+    def get_in_app_note(self, note_id: str) -> dict:
+        return self._in_app_notes_manager.get_note(note_id)
+
+    def delete_in_app_note(self, note_id: str) -> dict:
+        return self._in_app_notes_manager.delete_note(note_id)
+
+    def get_curriculum_structure(self) -> dict:
+        return {"success": True, "structure": InAppNotesManager.KCL_STRUCTURE}
+
+    def _find_presentation_for_note(self, note_id: str = "") -> tuple[Optional[Presentation], Optional[Path]]:
+        """Try to locate and open the source PPTX presentation for a given note or current state."""
+        source_file = ""
+        title = ""
+        if note_id:
+            note_info = self._in_app_notes_manager.get_note(note_id)
+            if note_info.get("success") and note_info.get("note"):
+                source_file = (note_info["note"].get("source_file") or "").strip()
+                title = (note_info["note"].get("title") or "").strip()
+
+        # If active presentation matches the requested note, return it directly
+        if self.state.presentation and self.state.pptx_path:
+            active_name = self.state.pptx_path.name.lower()
+            if not source_file or active_name == source_file.lower():
+                return self.state.presentation, self.state.pptx_path
+            # Extract lecture code (e.g. ACRS04L vs ACRS05L)
+            act_code_m = re.search(r"\b([A-Za-z]{3,4}\d{2}[A-Za-z]?)\b", active_name)
+            note_code_m = re.search(r"\b([A-Za-z]{3,4}\d{2}[A-Za-z]?)\b", f"{source_file} {title}")
+            if act_code_m and note_code_m and act_code_m.group(1).lower() == note_code_m.group(1).lower():
+                return self.state.presentation, self.state.pptx_path
+            # Note is for a DIFFERENT presentation (e.g. note is ACRS05L while active presentation is ACRS04L).
+            # Do NOT use self.state.presentation! Find the actual note's presentation on disk.
+        elif self.state.presentation and not source_file and not title:
+            return self.state.presentation, self.state.pptx_path
+
+        if not source_file and self.state.pptx_path:
+            source_file = self.state.pptx_path.name
+        if not title:
+            title = self.state.current_lecture_name or ""
+
+        candidate_dirs = [
+            Path(self._config.get("LECTURES_DIR", "./Lectures_OneDrive")).expanduser(),
+            Path.home() / "Library/CloudStorage/OneDrive-King'sCollegeLondon",
+            Path.home() / "Library/CloudStorage/OneDrive - King's College London",
+            Path.home() / "OneDrive - King's College London",
+            Path.home() / "Downloads",
+            Path.home() / "Documents"
+        ]
+        cloud_storage = Path.home() / "Library/CloudStorage"
+        if cloud_storage.exists():
+            for child in cloud_storage.iterdir():
+                if child.is_dir() and "onedrive" in child.name.lower() and child not in candidate_dirs:
+                    candidate_dirs.append(child)
+
+        found_path = None
+        for base_dir in candidate_dirs:
             try:
-                s_int = int(s)
-                png_bytes = self._notion_engine.get_best_slide_image(prs, s_int)
+                if not base_dir.exists():
+                    continue
+                if source_file:
+                    for f in base_dir.rglob("*.pptx"):
+                        if f.name.lower() == source_file.lower():
+                            found_path = f
+                            break
+                    if found_path:
+                        break
+                if not found_path and title:
+                    clean_title = re.sub(r"[^a-zA-Z0-9]+", " ", title).lower().strip()
+                    tokens = [t for t in clean_title.split() if len(t) > 3]
+                    for f in base_dir.rglob("*.pptx"):
+                        f_clean = re.sub(r"[^a-zA-Z0-9]+", " ", f.stem).lower()
+                        if tokens and all(tok in f_clean for tok in tokens[:3]):
+                            found_path = f
+                            break
+                    if found_path:
+                        break
+            except Exception as e:
+                print(f"[_find_presentation_for_note] Scan note: {e}")
+
+        if found_path and found_path.exists():
+            try:
+                prs = Presentation(str(found_path))
+                return prs, found_path
+            except Exception as e:
+                print(f"[_find_presentation_for_note] Failed opening {found_path}: {e}")
+
+        return None, None
+
+    def get_slide_diagram(self, slide_num: int, note_id: str = "", force: bool = False) -> dict:
+        slide_int = int(slide_num)
+        res = self.get_slide_diagrams([slide_int], note_id=note_id, force=force)
+        if res.get("success") and res.get("diagrams") and slide_int in res["diagrams"]:
+            return {"success": True, "slide_num": slide_int, "data_url": res["diagrams"][slide_int]}
+        return {"success": False, "error": f"No diagram found on slide {slide_num}"}
+
+    def get_slide_diagrams(self, slide_nums: list[int], note_id: str = "", force: bool = False) -> dict:
+        res = {}
+        missing_nums = []
+
+        # 1. Tier 1: Check if already persisted on disk in note's diagrams directory or cache (unless force refresh)
+        note_meta = {}
+        diag_dir = None
+        if note_id:
+            n_res = self._in_app_notes_manager.get_note(note_id)
+            if n_res.get("success") and n_res.get("note"):
+                note_meta = n_res["note"]
+                slug = note_meta.get("id", note_id)
+                diag_dir = self._in_app_notes_manager.get_diagrams_dir(
+                    slug, note_meta.get("module", ""), note_meta.get("block", ""), note_meta.get("md_path", "")
+                )
+
+        safe_src = Path(note_meta.get("source_file", "")).stem if note_meta.get("source_file") else ""
+        if not safe_src and self.state.pptx_path:
+            safe_src = self.state.pptx_path.stem
+
+        for s in slide_nums:
+            s_int = int(s)
+            found = False
+            if not force:
+                # Check note diagrams folder on disk
+                if diag_dir and (diag_dir / f"slide_{s_int}.png").exists():
+                    try:
+                        img_bytes = (diag_dir / f"slide_{s_int}.png").read_bytes()
+                        b64 = base64.b64encode(img_bytes).decode("ascii")
+                        res[s_int] = f"data:image/png;base64,{b64}"
+                        found = True
+                    except Exception:
+                        pass
+
+                # Check central slide cache on disk
+                if not found and safe_src:
+                    cache_file = SLIDE_CACHE_DIR / f"{safe_src}_slide_{s_int}.png"
+                    if cache_file.exists():
+                        try:
+                            img_bytes = cache_file.read_bytes()
+                            b64 = base64.b64encode(img_bytes).decode("ascii")
+                            res[s_int] = f"data:image/png;base64,{b64}"
+                            found = True
+                            if diag_dir:
+                                (diag_dir / f"slide_{s_int}.png").write_bytes(img_bytes)
+                        except Exception:
+                            pass
+
+            if not found:
+                missing_nums.append(s_int)
+
+        if not missing_nums:
+            return {"success": True, "diagrams": res}
+
+        # 2. Tier 2: Locate presentation (active state or auto-found from disk)
+        prs, prs_path = self._find_presentation_for_note(note_id)
+        if not prs:
+            return {"success": len(res) > 0, "diagrams": res}
+
+        # Extract missing diagrams, persist to disk for eternity, and return
+        for s_int in missing_nums:
+            try:
+                png_bytes = self._notion_engine.get_best_slide_image(prs, s_int, pptx_path=prs_path)
                 if png_bytes:
                     b64 = base64.b64encode(png_bytes).decode("ascii")
                     res[s_int] = f"data:image/png;base64,{b64}"
+                    # Persist to disk
+                    if diag_dir:
+                        (diag_dir / f"slide_{s_int}.png").write_bytes(png_bytes)
+                    if safe_src:
+                        (SLIDE_CACHE_DIR / f"{safe_src}_slide_{s_int}.png").write_bytes(png_bytes)
             except Exception as exc:
-                print(f"[get_slide_diagrams] Error rendering slide {s}: {exc}")
+                print(f"[get_slide_diagrams] Error extracting slide {s_int}: {exc}")
+
         return {"success": True, "diagrams": res}
 
     def push_notes_to_notion(self, md_notes: str, target_page_id: str = "") -> dict:
@@ -5494,6 +7701,9 @@ Output ONLY the bullet points, written directly as style rules."""
                 self._ocr_engine.min_confidence = float(updates["OCR_CONFIDENCE_THRESHOLD"])
             except Exception:
                 pass
+        if "AUTO_PREPARE_NOTES" in updates:
+            status = self.get_auto_prepare_status()
+            self._notify_frontend("auto-prepare-update", status)
         return {"success": True, "config": self._config._data}
 
     # ── Supabase Auth & Onboarding Endpoints ─────────────────────────────────
@@ -5616,6 +7826,246 @@ Output ONLY the bullet points, written directly as style rules."""
             {"id": "gemini-3.5-flash-lite", "name": "gemini-3.5-flash-lite (Fastest · 1,500 req/day · Default for Quick Chat & Cards)", "badge": "Flash Lite 3.5"},
         ]
 
+    def get_current_slide_screenshot(self) -> dict:
+        """Returns the current slide's rendered diagram as a base64 data URI for feedback attachment."""
+        try:
+            if not self.state.presentation or self.state.current_slide_idx < 0:
+                return {"success": False, "error": "No presentation or slide currently loaded."}
+
+            img = self.state.rendered_slide_image
+            if not img:
+                img = self._render_engine.get_slide_image(self.state.current_slide_idx, scale=1.5)
+            if not img and self.state.slide_images:
+                img = self.state.slide_images[0]
+
+            if not img:
+                return {"success": False, "error": "Could not retrieve diagram image for current slide."}
+
+            w, h = img.size
+            if w > 1600 or h > 1200:
+                img_copy = img.copy()
+                img_copy.thumbnail((1600, 1200), Image.Resampling.LANCZOS)
+            else:
+                img_copy = img
+
+            data_uri = pil_to_base64_data_uri(img_copy, format="PNG")
+            slide_num = self.state.current_slide_idx + 1
+            lec_name = self.state.pptx_path.name if self.state.pptx_path else "Presentation"
+            return {
+                "success": True,
+                "data_uri": data_uri,
+                "filename": f"{lec_name}_Slide_{slide_num}.png",
+                "slide_num": slide_num,
+                "lecture": lec_name
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def get_clipboard_image(self) -> dict:
+        """Retrieves an image directly from the macOS system clipboard (e.g. from ⌘⌃⇧4, ⌘⇧4, or copied image)."""
+        try:
+            from PIL import ImageGrab
+            content = ImageGrab.grabclipboard()
+            if isinstance(content, Image.Image):
+                buf = io.BytesIO()
+                w, h = content.size
+                if w > 1600 or h > 1200:
+                    img_copy = content.copy()
+                    img_copy.thumbnail((1600, 1200), Image.Resampling.LANCZOS)
+                else:
+                    img_copy = content
+                img_copy.save(buf, format="PNG")
+                b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+                return {
+                    "success": True,
+                    "data_uri": f"data:image/png;base64,{b64}",
+                    "name": "clipboard_screenshot.png",
+                    "size": f"{len(buf.getvalue()) / 1024:.1f} KB"
+                }
+            elif isinstance(content, list) and content:
+                for item in content:
+                    p = Path(str(item))
+                    if p.exists() and p.suffix.lower() in (".png", ".jpg", ".jpeg", ".webp"):
+                        img = Image.open(p)
+                        buf = io.BytesIO()
+                        img.save(buf, format="PNG")
+                        b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+                        return {
+                            "success": True,
+                            "data_uri": f"data:image/png;base64,{b64}",
+                            "name": p.name,
+                            "size": f"{p.stat().st_size / 1024:.1f} KB"
+                        }
+            if HAS_COCOA:
+                try:
+                    pb = AppKit.NSPasteboard.generalPasteboard()
+                    types = pb.types() or []
+                    for t in types:
+                        t_str = str(t).lower()
+                        if "png" in t_str or "tiff" in t_str or "pict" in t_str or "image" in t_str:
+                            data = pb.dataForType_(t)
+                            if data:
+                                raw_bytes = bytes(data)
+                                img = Image.open(io.BytesIO(raw_bytes))
+                                buf = io.BytesIO()
+                                img.save(buf, format="PNG")
+                                b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+                                return {
+                                    "success": True,
+                                    "data_uri": f"data:image/png;base64,{b64}",
+                                    "name": "clipboard_screenshot.png",
+                                    "size": f"{len(buf.getvalue()) / 1024:.1f} KB"
+                                }
+                except Exception as cocoa_err:
+                    print(f"Cocoa pasteboard fallback note: {cocoa_err}")
+
+            return {"success": False, "error": "No image found in clipboard. Take a screenshot with ⌘⇧4 or ⌘⌃⇧4 first."}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def send_app_feedback(
+        self,
+        category: str = "Feature Suggestion",
+        message: str = "",
+        email: str = "",
+        screenshot_base64: str = "",
+        active_tab: str = "home",
+        extra_diagnostics: dict = None
+    ) -> dict:
+        """Sends student feedback and optional screenshot attachment to Discord via Webhook."""
+        import urllib.request
+        import urllib.error
+        import uuid
+        from datetime import datetime, timezone
+
+        webhook_url = (self._config.get("DISCORD_FEEDBACK_WEBHOOK") or "").strip()
+        if not webhook_url:
+            webhook_url = "https://discord.com/api/webhooks/1572979254625312929/3exv62rYExNtpoibQPrCCFOMkzipWFpRI5pZDzyyoprQbgNdTI3uP1M6nlH3DIKQf85K"
+
+        msg_clean = (message or "").strip()
+        if not msg_clean:
+            return {"success": False, "error": "Feedback message cannot be empty."}
+
+        category_clean = (category or "Feature Suggestion").strip()
+        cat_lower = category_clean.lower()
+
+        if "bug" in cat_lower or "error" in cat_lower or "crash" in cat_lower:
+            color = 0xEF4444  # Red
+            emoji = "🐛"
+        elif "content" in cat_lower or "medical" in cat_lower or "card" in cat_lower:
+            color = 0xF59E0B  # Amber
+            emoji = "📚"
+        elif "design" in cat_lower or "ui" in cat_lower or "appearance" in cat_lower:
+            color = 0x8B5CF6  # Violet
+            emoji = "🎨"
+        else:
+            color = 0x2563EB  # Cobalt Blue
+            emoji = "💡"
+
+        user_display = (email or "").strip()
+        if not user_display:
+            auth_email = self._config.get("AUTH_EMAIL") or ""
+            user_name = self._config.get("USER_NAME") or ""
+            if user_name and auth_email:
+                user_display = f"{user_name} ({auth_email})"
+            elif auth_email:
+                user_display = auth_email
+            elif user_name:
+                user_display = user_name
+            else:
+                user_display = "Anonymous Student"
+
+        footer_parts = ["Synapse v2.2.0", active_tab.upper()]
+        if self.state.pptx_path:
+            lec_name = self.state.pptx_path.name
+            slide_no = self.state.current_slide_idx + 1
+            footer_parts.append(f"{lec_name} (Slide {slide_no})")
+
+        embed = {
+            "title": f"{emoji} {category_clean} — {user_display}",
+            "description": msg_clean[:2000],
+            "color": color,
+            "footer": {"text": " • ".join(footer_parts)},
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+
+        raw_screenshot = (screenshot_base64 or "").strip()
+        img_bytes = None
+        img_filename = "screenshot.png"
+        mime_type = "image/png"
+
+        if raw_screenshot:
+            try:
+                if "," in raw_screenshot:
+                    header, b64data = raw_screenshot.split(",", 1)
+                    if "image/jpeg" in header or "image/jpg" in header:
+                        mime_type = "image/jpeg"
+                        img_filename = "screenshot.jpg"
+                    elif "image/webp" in header:
+                        mime_type = "image/webp"
+                        img_filename = "screenshot.webp"
+                else:
+                    b64data = raw_screenshot
+
+                img_bytes = base64.b64decode(b64data)
+                embed["image"] = {"url": f"attachment://{img_filename}"}
+            except Exception as b64_err:
+                print(f"Warning: Failed to decode feedback screenshot: {b64_err}")
+                img_bytes = None
+
+        payload = {
+            "username": "Synapse Feedback",
+            "embeds": [embed]
+        }
+
+        try:
+            if img_bytes:
+                boundary = f"----SynapseFormBoundary{uuid.uuid4().hex}"
+                json_str = json.dumps(payload, ensure_ascii=False)
+                body = (
+                    f"--{boundary}\r\n"
+                    f'Content-Disposition: form-data; name="payload_json"\r\n'
+                    f'Content-Type: application/json\r\n\r\n'
+                    f'{json_str}\r\n'
+                    f"--{boundary}\r\n"
+                    f'Content-Disposition: form-data; name="files[0]"; filename="{img_filename}"\r\n'
+                    f'Content-Type: {mime_type}\r\n\r\n'
+                ).encode("utf-8") + img_bytes + f"\r\n--{boundary}--\r\n".encode("utf-8")
+
+                req = urllib.request.Request(
+                    webhook_url,
+                    data=body,
+                    headers={
+                        "Content-Type": f"multipart/form-data; boundary={boundary}",
+                        "User-Agent": "Synapse-Feedback/2.2.0"
+                    },
+                    method="POST"
+                )
+            else:
+                json_data = json.dumps(payload).encode("utf-8")
+                req = urllib.request.Request(
+                    webhook_url,
+                    data=json_data,
+                    headers={
+                        "Content-Type": "application/json",
+                        "User-Agent": "Synapse-Feedback/2.2.0"
+                    },
+                    method="POST"
+                )
+
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                if resp.status in (200, 204):
+                    return {"success": True, "message": "Feedback submitted successfully! Thank you for helping shape Synapse."}
+                else:
+                    return {"success": False, "error": f"Discord responded with HTTP status {resp.status}"}
+        except urllib.error.HTTPError as he:
+            err_body = he.read().decode("utf-8", errors="ignore")
+            print(f"Discord feedback HTTP error {he.code}: {err_body}")
+            return {"success": False, "error": f"HTTP {he.code}: {he.reason}"}
+        except Exception as e:
+            print(f"Discord feedback error: {e}")
+            return {"success": False, "error": str(e)}
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 11. NATIVE MACOS MENU BAR & SHORTCUTS
 # ─────────────────────────────────────────────────────────────────────────────
@@ -5684,6 +8134,8 @@ def build_native_menu(api: AppAPI) -> list[Menu]:
 
     # 6. Help Menu
     help_menu = Menu("Help", [
+        MenuAction("Send Feedback & Screenshots…", lambda: run_js("openFeedbackModal()")),
+        MenuSeparator(),
         MenuAction("Keyboard Shortcuts…", lambda: run_js("openShortcutsModal()")),
         MenuAction("About Synapse", lambda: run_js("openAboutModal()")),
     ])
