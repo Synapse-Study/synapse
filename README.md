@@ -16,12 +16,11 @@
 ---
 
 ## Preview
-
 <p align="center">
   <img src="https://github.com/user-attachments/assets/f100a732-6e02-4fcd-ad32-b057aa291699" alt="Synapse Overview" width="100%" /><br /><br />
   <img src="https://github.com/user-attachments/assets/037d73d6-9c4b-44e2-810f-48ffcad6f756" alt="Synapse Preview 2" width="100%" /><br /><br />
   <img src="https://github.com/user-attachments/assets/d4ea0885-8f6d-415b-83c9-e87ba6e4a4a9" alt="Synapse Preview 3" width="100%" /><br /><br />
-  <img src="https://github.com/user-attachments/assets/0840809f-8a1b-4df5-a3d8-bfc63b097f86" alt="Synapse Preview 4" width="100%" /><br /><br />
+  <img src="https://github.com/user-attachments/assets/58eb1a43-a2a6-416f-9df0-54af3b5ab436" alt="Synapse Preview 4" width="100%" /><br /><br />
   <img src="https://github.com/user-attachments/assets/83bdfb80-06a2-41fb-abb5-4a91a6ea09ac" alt="Synapse Preview 5" width="100%" /><br /><br />
   <img src="https://github.com/user-attachments/assets/333b1072-35e3-4983-bbb8-4f9be89e6921" alt="Synapse Preview 6" width="100%" />
 </p>
