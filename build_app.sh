@@ -62,70 +62,75 @@ if [ -n "$TV_DIR" ] && [ -d "$TV_DIR" ]; then
     fi
 fi
 
-# 5. Clean prior build artifacts
-echo "Cleaning existing dist/ and build/ folders..."
-rm -rf dist/Synapse.app dist/Synapse.dmg build/Synapse
+# 5. Clean prior build artifacts & run PyInstaller (unless --dmg-only is specified)
+if [ "${1:-}" = "--dmg-only" ] && [ -d "dist/Synapse.app" ]; then
+    echo "Found existing dist/Synapse.app. Skipping PyInstaller recompilation (--dmg-only mode)..."
+else
+    echo "Cleaning existing dist/ and build/ folders..."
+    rm -rf dist/Synapse.app dist/Synapse.dmg build/Synapse
 
-# 6. Build dist/Synapse.app with PyInstaller
-echo "Building dist/Synapse.app with PyInstaller..."
-"$PYTHON" -m "$PYINSTALLER_MOD" \
-    --noconfirm \
-    --clean \
-    --windowed \
-    --name "Synapse" \
-    --osx-bundle-identifier "com.synapse.app" \
-    "${ICON_ARGS[@]}" \
-    "${TV_ARGS[@]}" \
-    --add-data "gui:gui" \
-    --add-data "references:references" \
-    --add-data "my-lecture-notes.md:." \
-    --add-data ".easyocr_models:.easyocr_models" \
-    --collect-all webview \
-    --collect-all easyocr \
-    --collect-all torchvision \
-    --collect-all cv2 \
-    --copy-metadata torchvision \
-    --copy-metadata torch \
-    --copy-metadata easyocr \
-    --hidden-import torchvision._C_stable \
-    --hidden-import torchvision.image_stable \
-    --hidden-import webview \
-    --hidden-import supabase \
-    --hidden-import easyocr \
-    --hidden-import synapse_auth \
-    --hidden-import supabase_auth \
-    --hidden-import genanki \
-    --hidden-import pypdfium2 \
-    --hidden-import pptx \
-    --hidden-import PIL \
-    --hidden-import keyring \
-    --hidden-import keyring.backends.macOS \
-    anki_study_suite.py
+    # 6. Build dist/Synapse.app with PyInstaller
+    echo "Building dist/Synapse.app with PyInstaller..."
+    "$PYTHON" -m "$PYINSTALLER_MOD" \
+        --noconfirm \
+        --clean \
+        --windowed \
+        --name "Synapse" \
+        --osx-bundle-identifier "com.synapse.app" \
+        "${ICON_ARGS[@]}" \
+        "${TV_ARGS[@]}" \
+        --add-data "gui:gui" \
+        --add-data "references:references" \
+        --add-data "my-lecture-notes.md:." \
+        --add-data ".easyocr_models:.easyocr_models" \
+        --collect-all webview \
+        --collect-all certifi \
+        --collect-all easyocr \
+        --collect-all torchvision \
+        --collect-all cv2 \
+        --copy-metadata torchvision \
+        --copy-metadata torch \
+        --copy-metadata easyocr \
+        --hidden-import torchvision._C_stable \
+        --hidden-import torchvision.image_stable \
+        --hidden-import webview \
+        --hidden-import supabase \
+        --hidden-import easyocr \
+        --hidden-import synapse_auth \
+        --hidden-import supabase_auth \
+        --hidden-import genanki \
+        --hidden-import pypdfium2 \
+        --hidden-import pptx \
+        --hidden-import PIL \
+        --hidden-import keyring \
+        --hidden-import keyring.backends.macOS \
+        anki_study_suite.py
 
-# 7. Post-build verification and fallback symlinks for torchvision dylibs
-if [ -d "dist/Synapse.app/Contents/Resources/torchvision" ]; then
-    if [ -n "$TV_DIR" ]; then
-        cp -f "$TV_DIR"/*.so "dist/Synapse.app/Contents/Resources/torchvision/" 2>/dev/null || true
-        if [ -d "$TV_DIR/.dylibs" ]; then
-            cp -Rf "$TV_DIR/.dylibs" "dist/Synapse.app/Contents/Resources/torchvision/" 2>/dev/null || true
+    # 7. Post-build verification and fallback symlinks for torchvision dylibs
+    if [ -d "dist/Synapse.app/Contents/Resources/torchvision" ]; then
+        if [ -n "$TV_DIR" ]; then
+            cp -f "$TV_DIR"/*.so "dist/Synapse.app/Contents/Resources/torchvision/" 2>/dev/null || true
+            if [ -d "$TV_DIR/.dylibs" ]; then
+                cp -Rf "$TV_DIR/.dylibs" "dist/Synapse.app/Contents/Resources/torchvision/" 2>/dev/null || true
+            fi
         fi
     fi
+
+    # 8. Verify dist/Synapse.app was generated
+    if [ ! -d "dist/Synapse.app" ]; then
+        echo "Error: dist/Synapse.app build failed!" >&2
+        exit 1
+    fi
+    echo "Successfully created dist/Synapse.app"
+
+    # Clean any .DS_Store files from app bundle before signing
+    find "dist/Synapse.app" -name ".DS_Store" -delete 2>/dev/null || true
+
+    # 8.1 Re-sign app bundle ad-hoc to fix code signatures invalidated by post-build copies
+    echo "Signing dist/Synapse.app bundle ad-hoc..."
+    codesign --force --deep --sign - "dist/Synapse.app"
+    codesign -vvv --deep --strict "dist/Synapse.app"
 fi
-
-# 8. Verify dist/Synapse.app was generated
-if [ ! -d "dist/Synapse.app" ]; then
-    echo "Error: dist/Synapse.app build failed!" >&2
-    exit 1
-fi
-echo "Successfully created dist/Synapse.app"
-
-# Clean any .DS_Store files from app bundle before signing
-find "dist/Synapse.app" -name ".DS_Store" -delete 2>/dev/null || true
-
-# 8.1 Re-sign app bundle ad-hoc to fix code signatures invalidated by post-build copies
-echo "Signing dist/Synapse.app bundle ad-hoc..."
-codesign --force --deep --sign - "dist/Synapse.app"
-codesign -vvv --deep --strict "dist/Synapse.app"
 
 # 9. Package dist/Synapse.dmg with proper Drag-to-Applications layout
 echo "Preparing DMG staging layout..."
@@ -161,6 +166,26 @@ open /Applications/Synapse.app
 exit 0
 EOF
 chmod +x "$DMG_STAGING/Install & Launch Synapse.command"
+
+cat << 'EOF' > "$DMG_STAGING/How to Open & Install.txt"
+============================================================
+  SYNAPSE - INSTALLATION INSTRUCTIONS (macOS)
+============================================================
+
+Option 1 (Recommended - One Click):
+Double-click "Install & Launch Synapse.command".
+This automatically copies Synapse to /Applications, clears macOS
+quarantine attributes, and launches the app.
+
+Option 2 (Drag & Drop):
+1. Drag Synapse.app into the Applications folder shortcut.
+2. If macOS blocks opening with a Gatekeeper security warning:
+   - Right-click (or Control-click) Synapse.app in /Applications
+     and choose "Open", then click "Open" on the prompt.
+   - Or open Terminal and run:
+     xattr -cr /Applications/Synapse.app
+============================================================
+EOF
 
 find "$DMG_STAGING" -name ".DS_Store" -delete 2>/dev/null || true
 

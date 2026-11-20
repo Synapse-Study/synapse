@@ -725,6 +725,7 @@
       border-bottom-width: 0 !important;
       opacity: 0 !important;
       pointer-events: none !important;
+      overflow: hidden !important;
     }
 
     /* ── Notes Tab Top Controls Bar Collapsing ── */
@@ -751,7 +752,7 @@
   <!-- ========================================================================= -->
   <!-- 1. TOP NAVIGATION BAR                                                     -->
   <!-- ========================================================================= -->
-  <header id="app-top-header" class="h-16 px-6 bg-[var(--bg-card)] border-b border-[var(--border-card)] flex items-center justify-between z-30 shrink-0 transition-all duration-300 overflow-hidden">
+  <header id="app-top-header" class="relative z-40 h-16 px-6 bg-[var(--bg-card)] border-b border-[var(--border-card)] flex items-center justify-between shrink-0 transition-all duration-300">
     <!-- Brand / Title -->
     <div class="flex items-center gap-3 cursor-pointer" onclick="openAboutModal()" title="About Synapse">
       <div class="w-9 h-9 rounded-xl bg-gradient-to-tr from-blue-700 to-indigo-600 flex items-center justify-center text-white shadow-sm ring-1 ring-white/20">
@@ -760,19 +761,11 @@
       <div>
         <h1 class="text-base font-bold tracking-tight text-[var(--text-primary)] leading-tight flex items-center gap-2">
           <span>Synapse</span>
-          <span id="header-update-badge" class="hidden text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer shadow-xs animate-pulse" onclick="event.stopPropagation(); openAboutModal();" title="New update available! Click to view">v2.2.0 Update</span>
+          <span id="header-update-badge" class="hidden text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer shadow-xs animate-pulse" onclick="event.stopPropagation(); openAboutModal();" title="New update available! Click to view">Update Available</span>
         </h1>
         <p id="header-study-motto" class="text-xs text-[var(--text-dim)] font-medium">MBBS AI Studio & Questions</p>
       </div>
     </div>
-
-  <!-- Floating Pill to Restore Navigation Bar when Collapsed -->
-  <div id="floating-uncollapse-header" class="hidden fixed top-3 left-1/2 -translate-x-1/2 z-50 animate-bounce duration-1000">
-    <button onclick="toggleTopHeader()" class="px-3.5 py-1.5 rounded-full bg-slate-900/90 hover:bg-black text-white dark:bg-neutral-800/95 dark:hover:bg-neutral-700 shadow-lg border border-white/20 backdrop-blur-md text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer hover:scale-105">
-      <i data-lucide="chevrons-down" class="w-3.5 h-3.5 text-blue-400"></i>
-      <span>Show Navigation Bar</span>
-    </button>
-  </div>
 
     <!-- Segmented Navigation Pills -->
     <nav class="flex items-center p-1 bg-[var(--bg-card-subtle)] rounded-full border border-[var(--border-card)] shadow-xs">
@@ -835,6 +828,14 @@
       </button>
     </div>
   </header>
+
+  <!-- Floating Pill to Restore Navigation Bar when Collapsed -->
+  <div id="floating-uncollapse-header" class="hidden fixed top-3 left-1/2 -translate-x-1/2 z-50 animate-bounce duration-1000">
+    <button onclick="toggleTopHeader()" class="px-3.5 py-1.5 rounded-full bg-slate-900/90 hover:bg-black text-white dark:bg-neutral-800/95 dark:hover:bg-neutral-700 shadow-lg border border-white/20 backdrop-blur-md text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer hover:scale-105">
+      <i data-lucide="chevrons-down" class="w-3.5 h-3.5 text-blue-400"></i>
+      <span>Show Navigation Bar</span>
+    </button>
+  </div>
 
   <!-- ========================================================================= -->
   <!-- 2. MAIN APP CONTAINER (SIDEBAR + CONTENT)                                 -->
@@ -1431,7 +1432,10 @@
               <div class="w-4 h-4 border-2 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
               <span id="cards-progress-label" class="font-semibold text-blue-900 dark:text-blue-200">Generating calibrated flashcards...</span>
             </div>
-            <span id="cards-progress-count" class="font-bold text-blue-700 dark:text-blue-300">0 cards</span>
+            <div class="flex items-center gap-3">
+              <span id="cards-progress-count" class="font-bold text-blue-700 dark:text-blue-300">0 cards</span>
+              <button onclick="cancelCardsGeneration()" class="px-2.5 py-0.5 rounded-full border border-rose-200 dark:border-rose-900/50 bg-rose-50 dark:bg-rose-950/40 text-rose-600 dark:text-rose-400 font-semibold hover:bg-rose-100 dark:hover:bg-rose-900/60 transition-colors">Cancel</button>
+            </div>
           </div>
           <div class="w-full bg-blue-200/70 dark:bg-blue-900/60 rounded-full h-2 overflow-hidden">
             <div id="cards-progress-bar" class="bg-blue-600 h-2 rounded-full transition-all duration-300" style="width: 0%"></div>
@@ -3606,7 +3610,7 @@
       </div>
       <h3 class="text-lg font-bold text-[var(--text-primary)]">Synapse</h3>
       <div class="flex items-center gap-2">
-        <span id="about-version-badge" class="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-blue-50 text-blue-700 dark:bg-blue-950/40 dark:text-blue-300">Version 2.2.0</span>
+        <span id="about-version-badge" class="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-blue-50 text-blue-700 dark:bg-blue-950/40 dark:text-blue-300">Version 2.2.1</span>
         <span class="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-emerald-50 text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300 border border-emerald-200/60 dark:border-emerald-800/40 flex items-center gap-1">
           <i data-lucide="code-2" class="w-3 h-3 text-emerald-600 dark:text-emerald-400"></i> Fully Built with Python 3.12
         </span>
@@ -3996,7 +4000,7 @@
         <div class="p-3 rounded-xl bg-[var(--bg-card-subtle)] border border-[var(--border-card)] flex items-start gap-2.5 text-[11px] text-[var(--text-dim)]">
           <i data-lucide="info" class="w-4 h-4 text-blue-500 shrink-0 mt-0.5"></i>
           <div>
-            <span class="font-semibold text-[var(--text-primary)]">Automatic diagnostics:</span> Includes Synapse version (v2.2.0), macOS platform, and active tab context so the developer can reproduce bugs directly.
+            <span class="font-semibold text-[var(--text-primary)]">Automatic diagnostics:</span> Includes Synapse version (v2.2.1), macOS platform, and active tab context so the developer can reproduce bugs directly.
           </div>
         </div>
 
@@ -4571,23 +4575,44 @@
     }
 
     // ── Theme Management (Automatic Light / Dark Mode) ─────────────────────────
-    function setThemePreference(mode) {
+    async function setThemePreference(mode) {
       state.theme = mode;
       localStorage.setItem('synapse_theme', mode);
-      applyTheme(mode);
+      await applyTheme(mode);
       if (window.pywebview && window.pywebview.api && window.pywebview.api.save_config) {
         window.pywebview.api.save_config({ THEME: mode });
       }
     }
 
-    function applyTheme(themeMode) {
+    async function applyTheme(themeMode) {
+      // First, notify Cocoa NSApplication of the theme switch so Cocoa overrides or resets appearance
+      if (window.pywebview && window.pywebview.api && window.pywebview.api.set_native_theme) {
+        try {
+          await window.pywebview.api.set_native_theme(themeMode);
+        } catch (e) {}
+      }
+
       let isDark = false;
       if (themeMode === 'dark') {
         isDark = true;
       } else if (themeMode === 'light') {
         isDark = false;
       } else {
-        isDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+        // "system" mode: check Cocoa native system appearance first, then fallback to matchMedia
+        if (window.pywebview && window.pywebview.api && window.pywebview.api.get_system_is_dark) {
+          try {
+            const nativeDark = await window.pywebview.api.get_system_is_dark();
+            if (typeof nativeDark === 'boolean') {
+              isDark = nativeDark;
+            } else {
+              isDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+            }
+          } catch (e) {
+            isDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+          }
+        } else {
+          isDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+        }
       }
 
       if (isDark) {
@@ -4606,11 +4631,6 @@
           pill.className = 'theme-pill px-4 py-1.5 rounded-full text-xs font-semibold text-[var(--text-secondary)] hover:text-[var(--text-primary)]';
         }
       });
-
-      // Notify native macOS window to update NSWindow appearance
-      if (window.pywebview && window.pywebview.api && window.pywebview.api.set_native_theme) {
-        window.pywebview.api.set_native_theme(themeMode, isDark);
-      }
 
       renderAmbientGlow(state.ambientGlow);
       renderHomeBgShapes(state.homeBgPattern);
@@ -4748,6 +4768,12 @@
         if (data.current_slide && data.total_slides && progBar) {
           const pct = Math.min(100, Math.round((data.current_slide / data.total_slides) * 100));
           progBar.style.width = `${pct}%`;
+        }
+        if (data.status === 'cancelled') {
+          showToast(data.message || "Card generation cancelled.", "info");
+          setTimeout(() => {
+            if (progBox) progBox.classList.add('hidden');
+          }, 1500);
         }
         if (data.new_cards && Array.isArray(data.new_cards) && data.new_cards.length > 0) {
           data.new_cards.forEach(nc => {
@@ -6758,13 +6784,18 @@
       }
       pushUndo('masks', { description: 'Auto-Group Masks' });
       try {
-        showToast("Auto-grouping multi-line labels...", "info");
+        const prevCount = state.masks.length;
         const masks = await window.pywebview.api.auto_group_masks();
-        state.masks = masks;
+        const mergedCount = prevCount - (masks ? masks.length : prevCount);
+        state.masks = masks || [];
         state.selectedIndices.clear();
         renderMasks();
         renderMasksSidebarList();
-        showToast("Auto-grouped nearby label fragments ✓ (⌘Z to undo)", "success");
+        if (mergedCount > 0) {
+          showToast(`Auto-grouped ${mergedCount} multi-line fragment(s) into cohesive masks ✓ (⌘Z to undo)`, "success");
+        } else {
+          showToast("Labels are already optimally grouped ✓", "info");
+        }
       } catch (err) {
         showToast(`Auto-group error: ${err}`, "error");
       }
@@ -7043,7 +7074,9 @@
         }, 2500);
       } catch (err) {
         let errStr = String(err);
-        if (errStr.includes("429") || errStr.includes("RESOURCE_EXHAUSTED")) {
+        if (errStr.includes("cancelled") || errStr.includes("InterruptedError")) {
+          showToast("Card generation cancelled.", "info");
+        } else if (errStr.includes("429") || errStr.includes("RESOURCE_EXHAUSTED")) {
           showToast("Gemini Rate Limit (15 RPM): Free tier quota limit active. The app will auto-pace batches; please wait 30s.", "error");
         } else {
           showToast(`Generation error: ${errStr}`, "error");
@@ -7054,6 +7087,15 @@
         btn.classList.remove('opacity-75', 'pointer-events-none');
         if (window.lucide) lucide.createIcons();
       }
+    }
+
+    async function cancelCardsGeneration() {
+      try {
+        if (window.pywebview?.api?.cancel_cards_generation) {
+          await window.pywebview.api.cancel_cards_generation();
+        }
+      } catch (_) {}
+      showToast("Cancelling card generation...", "info");
     }
 
     async function generateActiveSlideCards() {
@@ -11095,7 +11137,7 @@
       latestAppUpdateInfo = info;
       const verBadge = document.getElementById('about-version-badge');
       if (verBadge) {
-        verBadge.innerText = `Version ${info.current_version || '2.2.0'} (v${info.latest_version} available)`;
+        verBadge.innerText = `Version ${info.current_version || '2.2.1'} (v${info.latest_version} available)`;
         verBadge.classList.remove('bg-blue-50', 'text-blue-700');
         verBadge.classList.add('bg-emerald-50', 'text-emerald-700', 'dark:bg-emerald-950/40', 'dark:text-emerald-300');
       }
@@ -11136,9 +11178,10 @@
             handleAppUpdateNotification(res);
             if (manual) showToast(`Update found: Synapse v${res.latest_version}`, "success");
           } else if (res && res.checked) {
-            if (manual) showToast(`Synapse is up to date! (v${res.current_version || '2.2.0'})`, "success");
+            if (manual) showToast(`Synapse is up to date! (v${res.current_version || '2.2.1'})`, "success");
           } else if (manual) {
-            showToast(`Could not check for updates: ${res ? res.error : 'Network error'}`, "error");
+            const errMsg = (res && res.error && String(res.error).trim()) ? String(res.error).trim() : 'Connection timed out or network error';
+            showToast(`Could not check for updates: ${errMsg}`, "error");
           }
         }
       } catch (err) {

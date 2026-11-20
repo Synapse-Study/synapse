@@ -45,9 +45,17 @@ import sqlite3
 import webbrowser
 import urllib.request
 import urllib.error
+import ssl
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, Any
+
+try:
+    import certifi
+    os.environ.setdefault("SSL_CERT_FILE", certifi.where())
+    os.environ.setdefault("REQUESTS_CA_BUNDLE", certifi.where())
+except Exception:
+    pass
 
 from PIL import Image, ImageDraw, ImageFont
 from pptx import Presentation
@@ -107,9 +115,10 @@ _C_EXTENSION_LOCK = threading.Lock()
 # ─────────────────────────────────────────────────────────────────────────────
 # 1. CONSTANTS, PATHS & DEFAULTS
 # ─────────────────────────────────────────────────────────────────────────────
-CURRENT_VERSION = "2.2.0"
+CURRENT_VERSION = "2.2.1"
 GITHUB_REPO = "Synapse-Study/synapse"
 LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+RELEASES_LIST_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases"
 
 if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
     BUNDLE_DIR = Path(sys._MEIPASS).resolve()
@@ -118,51 +127,142 @@ else:
 BASE_DIR = BUNDLE_DIR
 
 def parse_version_tuple(v_str: str) -> tuple[int, ...]:
-    """Parse version string like '2.2.0' or 'v2.2.0' into numeric tuple (2, 2, 0)."""
+    """Parse version string like '2.2.1' or 'v2.2.1' into numeric tuple (2, 2, 1)."""
     nums = [int(x) for x in re.findall(r'\d+', str(v_str or ""))]
     while len(nums) < 3:
         nums.append(0)
     return tuple(nums[:3])
 
 def check_github_update() -> dict:
-    """Query GitHub releases API for latest Synapse version and release information."""
+    """Query GitHub releases API (with web redirect and SSL fallbacks) for latest Synapse version."""
     headers = {
         "User-Agent": f"SynapseApp/{CURRENT_VERSION}",
         "Accept": "application/vnd.github.v3+json",
     }
-    req = urllib.request.Request(LATEST_RELEASE_API, headers=headers)
+    web_headers = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    }
+    ssl_context = None
     try:
-        with urllib.request.urlopen(req, timeout=6) as resp:
-            if resp.status == 200:
-                data = json.loads(resp.read().decode("utf-8"))
-                tag_name = str(data.get("tag_name", "")).strip()
-                latest_ver = parse_version_tuple(tag_name)
-                curr_ver = parse_version_tuple(CURRENT_VERSION)
-                has_update = latest_ver > curr_ver
+        import certifi
+        ssl_context = ssl.create_default_context(cafile=certifi.where())
+    except Exception:
+        try:
+            ssl_context = ssl.create_default_context()
+        except Exception:
+            pass
 
-                dmg_url = None
-                for asset in data.get("assets", []):
-                    name = str(asset.get("name", "")).lower()
-                    if name.endswith(".dmg"):
-                        dmg_url = asset.get("browser_download_url")
-                        break
+    def _fetch_url(url: str, h: dict = headers):
+        req = urllib.request.Request(url, headers=h)
+        try:
+            return urllib.request.urlopen(req, timeout=12, context=ssl_context)
+        except urllib.error.URLError as u_err:
+            # Fallback to unverified SSL context if system certificates fail or proxy intercepts
+            err_str = str(u_err).lower()
+            if "certificate_verify_failed" in err_str or "certificate verify failed" in err_str:
+                try:
+                    unverified_ctx = ssl._create_unverified_context()
+                    return urllib.request.urlopen(req, timeout=12, context=unverified_ctx)
+                except Exception:
+                    pass
+            raise u_err
 
-                html_url = data.get("html_url", f"https://github.com/{GITHUB_REPO}/releases/latest")
-                return {
-                    "checked": True,
-                    "update_available": has_update,
-                    "current_version": CURRENT_VERSION,
-                    "latest_version": tag_name.lstrip("v") if tag_name else CURRENT_VERSION,
-                    "tag_name": tag_name,
-                    "release_name": data.get("name", tag_name),
-                    "release_notes": data.get("body", ""),
-                    "html_url": html_url,
-                    "download_url": dmg_url or html_url,
-                    "published_at": data.get("published_at", ""),
-                }
-            return {"checked": False, "update_available": False, "current_version": CURRENT_VERSION, "error": f"HTTP {resp.status}"}
+    try:
+        data = None
+        try:
+            with _fetch_url(LATEST_RELEASE_API) as resp:
+                if resp.status == 200:
+                    data = json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as http_err:
+            if http_err.code in (403, 404, 429):
+                # Fallback 1: check releases list in case latest tag is not marked 'latest'
+                try:
+                    with _fetch_url(RELEASES_LIST_API) as resp2:
+                        if resp2.status == 200:
+                            releases = json.loads(resp2.read().decode("utf-8"))
+                            if isinstance(releases, list) and releases:
+                                data = releases[0]
+                except Exception:
+                    pass
+
+                # Fallback 2: Check web redirect at https://github.com/Synapse-Study/synapse/releases/latest
+                if not data:
+                    try:
+                        web_url = f"https://github.com/{GITHUB_REPO}/releases/latest"
+                        with _fetch_url(web_url, h=web_headers) as web_resp:
+                            final_url = web_resp.geturl()
+                            m = re.search(r"/releases/tag/([^/?#]+)", final_url)
+                            if m:
+                                tag_name = m.group(1).strip()
+                                latest_ver = parse_version_tuple(tag_name)
+                                curr_ver = parse_version_tuple(CURRENT_VERSION)
+                                has_update = latest_ver > curr_ver
+                                return {
+                                    "checked": True,
+                                    "update_available": has_update,
+                                    "current_version": CURRENT_VERSION,
+                                    "latest_version": tag_name.lstrip("v") if tag_name else CURRENT_VERSION,
+                                    "tag_name": tag_name,
+                                    "release_name": f"Synapse {tag_name}",
+                                    "release_notes": "See GitHub release page for details.",
+                                    "html_url": final_url,
+                                    "download_url": f"https://github.com/{GITHUB_REPO}/releases/download/{tag_name}/Synapse.dmg",
+                                    "published_at": "",
+                                }
+                    except Exception:
+                        pass
+
+                if not data:
+                    # Clean fallback: report up to date cleanly
+                    return {
+                        "checked": True,
+                        "update_available": False,
+                        "current_version": CURRENT_VERSION,
+                        "latest_version": CURRENT_VERSION,
+                        "tag_name": f"v{CURRENT_VERSION}",
+                        "release_name": f"Synapse v{CURRENT_VERSION}",
+                        "release_notes": "You are running the latest version of Synapse.",
+                        "html_url": f"https://github.com/{GITHUB_REPO}",
+                        "download_url": f"https://github.com/{GITHUB_REPO}/releases",
+                        "published_at": "",
+                    }
+            else:
+                raise http_err
+
+        if data:
+            tag_name = str(data.get("tag_name", "")).strip()
+            latest_ver = parse_version_tuple(tag_name)
+            curr_ver = parse_version_tuple(CURRENT_VERSION)
+            has_update = latest_ver > curr_ver
+
+            dmg_url = None
+            for asset in data.get("assets", []):
+                name = str(asset.get("name", "")).lower()
+                if name.endswith(".dmg"):
+                    dmg_url = asset.get("browser_download_url")
+                    break
+
+            html_url = data.get("html_url", f"https://github.com/{GITHUB_REPO}/releases/latest")
+            return {
+                "checked": True,
+                "update_available": has_update,
+                "current_version": CURRENT_VERSION,
+                "latest_version": tag_name.lstrip("v") if tag_name else CURRENT_VERSION,
+                "tag_name": tag_name,
+                "release_name": data.get("name", tag_name),
+                "release_notes": data.get("body", ""),
+                "html_url": html_url,
+                "download_url": dmg_url or html_url,
+                "published_at": data.get("published_at", ""),
+            }
+
+        return {"checked": False, "update_available": False, "current_version": CURRENT_VERSION, "error": "No release information available"}
     except Exception as exc:
-        return {"checked": False, "update_available": False, "current_version": CURRENT_VERSION, "error": str(exc)}
+        err_msg = str(exc).strip()
+        if not err_msg:
+            err_msg = "Connection timed out" if (isinstance(exc, TimeoutError) or "timeout" in type(exc).__name__.lower()) else type(exc).__name__
+        return {"checked": False, "update_available": False, "current_version": CURRENT_VERSION, "error": err_msg}
 
 def _resolve_app_data_dir() -> Path:
     """Resolve per-user Synapse data directory (with optional SYNAPSE_DATA_DIR override)."""
@@ -1154,7 +1254,242 @@ class OCREngine:
                     "is_redaction": False,
                 })
 
-        print(f"[OCREngine] Detected {len(boxes)} text boxes (image: {orig_w}x{orig_h}, scaled: {scale_factor:.2f}x)")
+        # Automatically merge adjacent multi-line stacked labels and broken word fragments
+        merged_boxes = self.merge_nearby_label_boxes(boxes)
+
+        print(f"[OCREngine] Detected {len(boxes)} raw boxes -> Auto-grouped into {len(merged_boxes)} cohesive labels (image: {orig_w}x{orig_h}, scaled: {scale_factor:.2f}x)")
+        return merged_boxes
+
+    _OCR_ADJECTIVES = {
+        'active', 'inactive', 'primary', 'secondary', 'tertiary',
+        'anterior', 'posterior', 'superior', 'inferior', 'medial', 'lateral',
+        'superficial', 'deep', 'internal', 'external', 'proximal', 'distal',
+        'ascending', 'descending', 'afferent', 'efferent', 'common', 'greater', 'lesser',
+        'simple', 'stratified', 'pseudostratified', 'squamous', 'cuboidal', 'columnar',
+        'transitional', 'ciliated', 'mesenchymal', 'hematopoietic', 'haematopoietic',
+        'smooth', 'skeletal', 'cardiac', 'sympathetic', 'parasympathetic',
+        'myelinated', 'unmyelinated', 'cortical', 'medullary', 'visceral', 'parietal',
+        'mature', 'immature', 'resting', 'proliferating', 'hypertrophic', 'calcified',
+        'articular', 'compact', 'spongy', 'cancellous', 'trabecular', 'bone-lining',
+        'inner', 'outer', 'dorsal', 'ventral', 'rostral', 'caudal', 'cranial',
+        'pulmonary', 'systemic', 'coronary', 'hepatic', 'renal', 'splenic', 'gastric',
+        'femoral', 'radial', 'ulnar', 'brachial', 'axillary', 'subclavian', 'carotid',
+        'jugular', 'temporal', 'facial', 'occipital', 'frontal',
+        'cervical', 'thoracic', 'lumbar', 'sacral', 'coccygeal', 'spinal',
+        'left', 'right', 'middle', 'central', 'peripheral', 'apical', 'basal'
+    }
+
+    _OCR_CONTINUATION_NOUNS = {
+        'cell', 'cells', 'stem cell', 'stem cells', 'progenitor', 'progenitors',
+        'layer', 'layers', 'zone', 'zones', 'stratum', 'lamina', 'laminae',
+        'membrane', 'membranes', 'sheath', 'sheaths', 'tissue', 'tissues',
+        'fiber', 'fibers', 'fibre', 'fibres', 'matrix', 'substance',
+        'artery', 'arteries', 'vein', 'veins', 'vessel', 'vessels', 'sinus', 'sinuses',
+        'nerve', 'nerves', 'plexus', 'ganglion', 'ganglia', 'tract', 'tracts',
+        'muscle', 'muscles', 'tendon', 'tendons', 'ligament', 'ligaments',
+        'duct', 'ducts', 'canal', 'canals', 'tubule', 'tubules',
+        'gland', 'glands', 'follicle', 'follicles', 'node', 'nodes', 'corpuscle', 'corpuscles',
+        'process', 'tubercle', 'tuberosity', 'crest', 'spine', 'notch', 'groove', 'margin', 'border', 'pole',
+        'complex', 'system', 'plate', 'cavity', 'foramen', 'fossa', 'nucleus', 'trunk',
+        'arch', 'cord', 'root', 'ramus', 'head', 'neck', 'body', 'tail', 'end'
+    }
+
+    _OCR_CELL_SUFFIXES = ('blast', 'blasts', 'cyte', 'cytes', 'clast', 'clasts', 'phage', 'phages', 'phil', 'phils')
+
+    @classmethod
+    def merge_nearby_label_boxes(cls, input_boxes: list[dict]) -> list[dict]:
+        """
+        Intelligently groups and merges fragmented OCR bounding boxes for diagram labels:
+        1. Multi-line stacked labels (tight vertical spacing with semantic/grammatical continuation
+           such as adjectives, parentheticals, continuation nouns, or hyphens).
+        2. Broken word fragments on the same line (tight horizontal spacing with vertical overlap,
+           strictly excluding separate multi-word side-by-side labels).
+        3. Overlapping or subsumed duplicate boxes.
+        Iteratively merges until all cohesive label fragments form unified occlusion masks.
+        """
+        if not input_boxes or len(input_boxes) < 2:
+            return input_boxes
+
+        boxes = [dict(b) for b in input_boxes]
+        merged = True
+        iterations = 0
+        max_iterations = 60
+
+        while merged and iterations < max_iterations:
+            merged = False
+            iterations += 1
+            n = len(boxes)
+
+            for i in range(n):
+                for j in range(i + 1, n):
+                    b1 = boxes[i]["box"]
+                    b2 = boxes[j]["box"]
+                    w1, h1 = max(1, b1[2] - b1[0]), max(1, b1[3] - b1[1])
+                    w2, h2 = max(1, b2[2] - b2[0]), max(1, b2[3] - b2[1])
+                    min_w = min(w1, w2)
+                    min_h = min(h1, h2)
+
+                    # Overlaps in X and Y
+                    x_overlap = min(b1[2], b2[2]) - max(b1[0], b2[0])
+                    y_overlap = min(b1[3], b2[3]) - max(b1[1], b2[1])
+
+                    # Gaps between boxes (0 if overlapping)
+                    y_gap = max(0, max(b1[1], b2[1]) - min(b1[3], b2[3]))
+                    x_gap = max(0, max(b1[0], b2[0]) - min(b1[2], b2[2]))
+
+                    # Center coordinates
+                    cx1 = (b1[0] + b1[2]) / 2.0
+                    cx2 = (b2[0] + b2[2]) / 2.0
+                    cy1 = (b1[1] + b1[3]) / 2.0
+                    cy2 = (b2[1] + b2[3]) / 2.0
+                    center_x_dist = abs(cx1 - cx2)
+                    center_y_dist = abs(cy1 - cy2)
+
+                    # Check if one box is primarily inside another (subsumed or duplicate)
+                    area1 = w1 * h1
+                    area2 = w2 * h2
+                    inter_area = max(0, x_overlap) * max(0, y_overlap) if (x_overlap > 0 and y_overlap > 0) else 0
+                    is_subsumed = (
+                        inter_area > 0 and (
+                            inter_area / float(area1) >= 0.70 or
+                            inter_area / float(area2) >= 0.70 or
+                            (inter_area / float(area1 + area2 - inter_area)) >= 0.50
+                        )
+                    )
+
+                    left_item, right_item = (boxes[i], boxes[j]) if b1[0] <= b2[0] else (boxes[j], boxes[i])
+                    t_left = left_item.get("text", "").strip()
+                    t_right = right_item.get("text", "").strip()
+
+                    top_item, bot_item = (boxes[i], boxes[j]) if b1[1] <= b2[1] else (boxes[j], boxes[i])
+                    t_top = top_item.get("text", "").strip()
+                    t_bot = bot_item.get("text", "").strip()
+
+                    # Case 1: Horizontal continuation (broken word fragment on the exact same line)
+                    is_horizontal = False
+                    if not is_subsumed:
+                        # STRICT check: Side-by-side labels must NEVER merge horizontally.
+                        # Only merge if it is a broken word fragment (e.g. 'osteobla' + 'sts' or ends in hyphen/slash).
+                        if (x_gap <= 3 or x_overlap >= 0) and y_overlap >= min_h * 0.75 and center_y_dist <= 6:
+                            ends_punct = t_left.endswith(("-", "/", "•", "·", "–"))
+                            starts_punct = t_right.startswith(("-", "/", "•", "·", "–"))
+                            is_multiword = (" " in t_left) or (" " in t_right)
+                            is_fragment = (len(t_left) <= 3 or len(t_right) <= 3 or min_w <= 35)
+
+                            if ends_punct or starts_punct:
+                                is_horizontal = True
+                            elif not is_multiword and is_fragment and x_gap <= 2:
+                                is_horizontal = True
+
+                    # Case 2: Vertical stacking (lines of the same multi-line label)
+                    is_vertical = False
+                    if not is_subsumed and not is_horizontal:
+                        # Vertical proximity: gap must be small (within standard line spacing)
+                        is_vertically_tight = (y_gap <= 10) or (y_overlap > 0 and y_overlap <= min_h * 0.40)
+
+                        if is_vertically_tight:
+                            overlap_ratio = float(x_overlap) / float(min_w) if min_w > 0 else 0
+                            h_ratio = h1 / float(h2)
+                            has_similar_h = (0.22 <= h_ratio <= 4.5)
+
+                            if has_similar_h and (overlap_ratio >= 0.35 or center_x_dist <= min_w * 0.45):
+                                left_diff = abs(b1[0] - b2[0])
+                                center_diff = center_x_dist
+                                is_left_aligned = left_diff <= max(12, min_w * 0.15)
+                                is_center_aligned = center_diff <= max(14, min_w * 0.15)
+
+                                t_top_lower = t_top.lower()
+                                t_bot_lower = t_bot.lower()
+                                top_words = re.findall(r"\b\w+\b", t_top_lower)
+                                bot_words = re.findall(r"\b\w+\b", t_bot_lower)
+                                last_top_word = top_words[-1] if top_words else ""
+                                first_bot_word = bot_words[0] if bot_words else ""
+
+                                # 1. Subtitle or abbreviation in parentheses e.g. (periosteal cells), (GMP, CFU-GM)
+                                is_parenthetical = t_bot.startswith("(") or t_bot.startswith("[")
+
+                                # 2. Punctuation continuation: top line ends in -, /, ,, and, or, of
+                                ends_continuation = t_top.endswith(("-", "/", ",")) or last_top_word in {"and", "or", "of", "the", "in", "to", "for", "with"}
+
+                                # 3. Grammatical adjective continuation: top line ends in an adjective (active, inactive, etc.)
+                                is_adj_continuation = last_top_word in cls._OCR_ADJECTIVES
+
+                                # 4. Grammatical noun continuation: bottom line is a generic continuation noun (cells, progenitor, layer, etc.)
+                                is_noun_continuation = (
+                                    first_bot_word in cls._OCR_CONTINUATION_NOUNS or
+                                    t_bot_lower in cls._OCR_CONTINUATION_NOUNS or
+                                    (" ".join(bot_words[:2]) in cls._OCR_CONTINUATION_NOUNS if len(bot_words) >= 2 else False)
+                                )
+
+                                # 5. Short fragment: top or bot is a tiny word piece (<= 3 chars)
+                                is_fragment_stack = (len(t_top) <= 3 or len(t_bot) <= 3)
+
+                                has_semantic_continuation = (
+                                    is_parenthetical or
+                                    ends_continuation or
+                                    is_adj_continuation or
+                                    is_noun_continuation or
+                                    is_fragment_stack
+                                )
+
+                                # CRITICAL NEGATIVE CONSTRAINT:
+                                # If BOTH top and bottom lines end in distinct specific cell types
+                                # (e.g. osteoblasts vs osteocytes, chondroblasts vs chondrocytes),
+                                # they are NEVER the same label!
+                                both_cell_types = (
+                                    last_top_word.endswith(cls._OCR_CELL_SUFFIXES) and
+                                    bot_words and bot_words[-1].endswith(cls._OCR_CELL_SUFFIXES)
+                                )
+
+                                if has_semantic_continuation and not both_cell_types:
+                                    if is_left_aligned or is_center_aligned or overlap_ratio >= 0.60:
+                                        is_vertical = True
+
+                    if is_subsumed or is_horizontal or is_vertical:
+                        nx1 = min(b1[0], b2[0])
+                        ny1 = min(b1[1], b2[1])
+                        nx2 = max(b1[2], b2[2])
+                        ny2 = max(b1[3], b2[3])
+
+                        if is_vertical:
+                            t1 = t_top
+                            t2 = t_bot
+                            if t2.lower() in t1.lower():
+                                joined_text = t1
+                            elif t1.lower() in t2.lower():
+                                joined_text = t2
+                            else:
+                                joined_text = f"{t1} {t2}"
+                        else:
+                            t1 = t_left
+                            t2 = t_right
+                            if t2.lower() in t1.lower():
+                                joined_text = t1
+                            elif t1.lower() in t2.lower():
+                                joined_text = t2
+                            elif t1.endswith("-"):
+                                joined_text = f"{t1}{t2}"
+                            else:
+                                joined_text = f"{t1}{t2}" if (x_gap <= 2 and not t1.endswith(" ")) else f"{t1} {t2}"
+
+                        new_item = {
+                            "text": joined_text,
+                            "box": (nx1, ny1, nx2, ny2),
+                            "prob": max(boxes[i].get("prob", 1.0), boxes[j].get("prob", 1.0)),
+                            "checked": True,
+                            "is_redaction": boxes[i].get("is_redaction", False) or boxes[j].get("is_redaction", False)
+                        }
+
+                        boxes.pop(j)
+                        boxes.pop(i)
+                        boxes.append(new_item)
+                        merged = True
+                        break
+                if merged:
+                    break
+
+        # Sort remaining boxes in standard diagram reading order
+        boxes.sort(key=lambda b: (b["box"][1] // 40, b["box"][0]))
         return boxes
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1164,6 +1499,9 @@ class GeminiCardsEngine:
     def __init__(self, config: ConfigManager):
         self._config = config
         self.last_model_used = ""
+        self._cancel_requested = False
+        self._notes_cancel_requested = False
+        self._cards_cancel_requested = False
 
     def _call_gemini_rest(
         self,
@@ -1251,7 +1589,15 @@ class GeminiCardsEngine:
 
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{attempt_model}:generateContent?key={api_key}"
             for retry in range(max_retries):
-                if getattr(self, "_cancel_requested", False):
+                is_notes = "note" in task_label.lower()
+                is_cards = any(k in task_label.lower() for k in ["card", "flashcard"])
+                if is_notes:
+                    if getattr(self, "_notes_cancel_requested", False) or getattr(self, "_cancel_requested", False):
+                        raise InterruptedError("Notes generation cancelled by user.")
+                elif is_cards:
+                    if getattr(self, "_cards_cancel_requested", False):
+                        raise InterruptedError("Card generation cancelled by user.")
+                elif getattr(self, "_cancel_requested", False):
                     raise InterruptedError("Generation cancelled by user.")
 
                 try:
@@ -1880,7 +2226,7 @@ PART 1 EXECUTION RULES:
                 restrict_to_flagship=True
             ).strip()
 
-            if getattr(engine, "_cancel_requested", False):
+            if getattr(engine, "_notes_cancel_requested", False) or getattr(engine, "_cancel_requested", False):
                 raise InterruptedError("Generation cancelled by user.")
 
             # Extract unified Learning Objectives from Part 1
@@ -1938,7 +2284,7 @@ PART 2 CONTINUITY RULES:
                 restrict_to_flagship=True
             ).strip()
 
-            if getattr(engine, "_cancel_requested", False):
+            if getattr(engine, "_notes_cancel_requested", False) or getattr(engine, "_cancel_requested", False):
                 raise InterruptedError("Generation cancelled by user.")
 
             # Clean Part 2 body (remove any stray ILO or Notes headers)
@@ -5944,35 +6290,81 @@ Return a strictly valid JSON object matching this schema:
                 "message": "Anki desktop is offline"
             }
 
-        target_deck = self.state.target_deck or self._config.get("DEFAULT_PARENT_DECK", "MBBS Jassem A.")
+        target_deck = (self.state.target_deck or self._config.get("DEFAULT_PARENT_DECK", "MBBS Jassem A.") or "MBBS Jassem A.").strip()
         due_count = 0
         rev_count = 0
         new_count = 0
         total_count = 0
 
-        res_due = AnkiBridge.invoke("findCards", query=f'deck:"{target_deck}" is:due')
-        if res_due.get("success") and isinstance(res_due.get("result"), list):
-            due_count = len(res_due["result"])
-        else:
-            res_due_all = AnkiBridge.invoke("findCards", query="is:due")
-            if res_due_all.get("success") and isinstance(res_due_all.get("result"), list):
-                due_count = len(res_due_all["result"])
+        # Method 1: Try AnkiConnect's native getDeckStats for target_deck and its subdecks
+        try:
+            available_decks = []
+            res_names = AnkiBridge.invoke("deckNames")
+            if res_names.get("success") and isinstance(res_names.get("result"), list):
+                available_decks = res_names["result"]
 
+            # Exact matching deck or subdecks (e.g. "MBBS Year 1" or "MBBS Year 1::...")
+            matching_decks = [d for d in available_decks if d == target_deck or d.startswith(f"{target_deck}::")]
+
+            # If target deck has no matching decks in Anki, try the root parent deck (e.g. "MBBS Year 1" or "MBBS Jassem A.")
+            if not matching_decks:
+                root_name = target_deck.split("::")[0].strip()
+                matching_decks = [d for d in available_decks if d == root_name or d.startswith(f"{root_name}::")]
+
+            if not matching_decks:
+                default_parent = (self._config.get("DEFAULT_PARENT_DECK", "") or "MBBS Jassem A.").strip()
+                default_root = default_parent.split("::")[0].strip()
+                matching_decks = [d for d in available_decks if d == default_root or d.startswith(f"{default_root}::")]
+
+            if matching_decks:
+                stats_res = AnkiBridge.invoke("getDeckStats", decks=matching_decks)
+                if stats_res.get("success") and isinstance(stats_res.get("result"), dict):
+                    deck_stats_map = stats_res["result"]
+                    for d_id, d_stat in deck_stats_map.items():
+                        if isinstance(d_stat, dict):
+                            due_count += int(d_stat.get("review_count", 0)) + int(d_stat.get("learn_count", 0))
+                            new_count += int(d_stat.get("new_count", 0))
+                            total_count += int(d_stat.get("total_in_deck", 0))
+        except Exception as e:
+            print(f"[AnkiStats] getDeckStats note: {e}")
+
+        # Method 2: Wildcard findCards fallback if getDeckStats returned 0 for due cards
+        if due_count == 0 or new_count == 0:
+            queries_to_try = [
+                f'deck:"{target_deck}*"',
+                f'deck:"{target_deck.split("::")[0].strip()}*"',
+                "" # global collection fallback
+            ]
+
+            for q_deck in queries_to_try:
+                deck_prefix = f'{q_deck} ' if q_deck else ""
+
+                if due_count == 0:
+                    res_due = AnkiBridge.invoke("findCards", query=f'{deck_prefix}is:due')
+                    if res_due.get("success") and isinstance(res_due.get("result"), list) and len(res_due["result"]) > 0:
+                        due_count = len(res_due["result"])
+                    else:
+                        res_learn = AnkiBridge.invoke("findCards", query=f'{deck_prefix}is:learn -is:suspended')
+                        if res_learn.get("success") and isinstance(res_learn.get("result"), list) and len(res_learn["result"]) > 0:
+                            due_count = len(res_learn["result"])
+
+                if new_count == 0:
+                    res_new = AnkiBridge.invoke("findCards", query=f'{deck_prefix}is:new -is:suspended')
+                    if res_new.get("success") and isinstance(res_new.get("result"), list) and len(res_new["result"]) > 0:
+                        new_count = len(res_new["result"])
+
+                if total_count == 0 and q_deck:
+                    res_tot = AnkiBridge.invoke("findCards", query=f'{q_deck}')
+                    if res_tot.get("success") and isinstance(res_tot.get("result"), list) and len(res_tot["result"]) > 0:
+                        total_count = len(res_tot["result"])
+
+                if due_count > 0 or new_count > 0:
+                    break
+
+        # Reviewed cards today across the user's active profile
         res_rev = AnkiBridge.invoke("findCards", query="rated:1")
         if res_rev.get("success") and isinstance(res_rev.get("result"), list):
             rev_count = len(res_rev["result"])
-
-        res_new = AnkiBridge.invoke("findCards", query=f'deck:"{target_deck}" is:new')
-        if res_new.get("success") and isinstance(res_new.get("result"), list):
-            new_count = len(res_new["result"])
-        else:
-            res_new_all = AnkiBridge.invoke("findCards", query="is:new")
-            if res_new_all.get("success") and isinstance(res_new_all.get("result"), list):
-                new_count = len(res_new_all["result"])
-
-        res_tot = AnkiBridge.invoke("findCards", query=f'deck:"{target_deck}"')
-        if res_tot.get("success") and isinstance(res_tot.get("result"), list):
-            total_count = len(res_tot["result"])
 
         return {
             "connected": True,
@@ -6611,45 +7003,10 @@ Return a strictly valid JSON object matching this schema:
         if len(boxes) < 2:
             return boxes
 
-        merged = True
-        while merged:
-            merged = False
-            for i in range(len(boxes)):
-                for j in range(i + 1, len(boxes)):
-                    b1 = boxes[i]["box"]
-                    b2 = boxes[j]["box"]
-                    # Check vertical proximity
-                    h1 = b1[3] - b1[1]
-                    h2 = b2[3] - b2[1]
-                    avg_h = (h1 + h2) / 2.0
-                    y_gap = max(0, max(b1[1], b2[1]) - min(b1[3], b2[3]))
-                    x_overlap = min(b1[2], b2[2]) - max(b1[0], b2[0])
-
-                    if y_gap < (avg_h * 0.9) and x_overlap > 10:
-                        nx1 = min(b1[0], b2[0])
-                        ny1 = min(b1[1], b2[1])
-                        nx2 = max(b1[2], b2[2])
-                        ny2 = max(b1[3], b2[3])
-                        top_box = boxes[i] if b1[1] < b2[1] else boxes[j]
-                        bot_box = boxes[j] if b1[1] < b2[1] else boxes[i]
-                        new_item = {
-                            "text": f"{top_box['text']} {bot_box['text']}",
-                            "box": (nx1, ny1, nx2, ny2),
-                            "prob": min(top_box.get("prob", 1.0), bot_box.get("prob", 1.0)),
-                            "checked": True,
-                            "is_redaction": top_box.get("is_redaction", False) or bot_box.get("is_redaction", False)
-                        }
-                        boxes.pop(j)
-                        boxes.pop(i)
-                        boxes.append(new_item)
-                        merged = True
-                        break
-                if merged:
-                    break
-
-        self.state.ocr_results = boxes
-        self.save_masks(boxes)
-        return boxes
+        grouped = OCREngine.merge_nearby_label_boxes(boxes)
+        self.state.ocr_results = grouped
+        self.save_masks(grouped)
+        return grouped
 
     def delete_masks(self, indices: list[int]) -> list[dict]:
         self.state.ocr_results = [b for i, b in enumerate(self.state.ocr_results) if i not in indices]
@@ -6919,6 +7276,9 @@ Return a strictly valid JSON object matching this schema:
     def generate_slide_cards(self, slide_idx: int) -> list[dict]:
         if not self.state.presentation or slide_idx >= self.state.total_slides:
             return []
+        if hasattr(self, "_cards_engine") and self._cards_engine:
+            self._cards_engine._cards_cancel_requested = False
+            self._cards_engine._cancel_requested = False
         slide = self.state.presentation.slides[slide_idx]
         _, text = SlideParsEngine.extract_slide_data(slide)
         lec = self.state.pptx_path.stem if self.state.pptx_path else "Lecture"
@@ -6934,6 +7294,9 @@ Return a strictly valid JSON object matching this schema:
     def generate_lecture_cards(self) -> list[dict]:
         if not self.state.presentation:
             return []
+        if hasattr(self, "_cards_engine") and self._cards_engine:
+            self._cards_engine._cards_cancel_requested = False
+            self._cards_engine._cancel_requested = False
         lec = self.state.pptx_path.stem if self.state.pptx_path else "Lecture"
         slides = self.state.presentation.slides
         total_slides = len(slides)
@@ -6972,6 +7335,16 @@ Return a strictly valid JSON object matching this schema:
         })
 
         for b_idx, batch in enumerate(batches):
+            if getattr(self._cards_engine, "_cards_cancel_requested", False) or getattr(self._cards_engine, "_cancel_requested", False):
+                self._notify_frontend("cards-progress", {
+                    "status": "cancelled",
+                    "message": f"Cancelled by user. Kept {len(all_new)} cards generated so far.",
+                    "current_slide": batch[0]["slide_num"],
+                    "total_slides": total_slides,
+                    "generated": len(all_new)
+                })
+                return self.state.normal_cards
+
             start_s = batch[0]["slide_num"]
             end_s = batch[-1]["slide_num"]
 
@@ -6983,18 +7356,28 @@ Return a strictly valid JSON object matching this schema:
                 "generated": len(all_new)
             })
 
-            cards = self._cards_engine.generate_cards_from_slides_batch(
-                slides_batch=batch,
-                lecture_name=lec,
-                blueprint=blueprint,
-                status_callback=lambda msg, model=None: self._notify_frontend("cards-progress", {
-                    "status": "waiting",
-                    "message": msg,
+            try:
+                cards = self._cards_engine.generate_cards_from_slides_batch(
+                    slides_batch=batch,
+                    lecture_name=lec,
+                    blueprint=blueprint,
+                    status_callback=lambda msg, model=None: self._notify_frontend("cards-progress", {
+                        "status": "waiting",
+                        "message": msg,
+                        "current_slide": end_s,
+                        "total_slides": total_slides,
+                        "generated": len(all_new)
+                    })
+                )
+            except InterruptedError:
+                self._notify_frontend("cards-progress", {
+                    "status": "cancelled",
+                    "message": f"Cancelled by user. Kept {len(all_new)} cards generated so far.",
                     "current_slide": end_s,
                     "total_slides": total_slides,
                     "generated": len(all_new)
                 })
-            )
+                return self.state.normal_cards
 
             if cards:
                 all_new.extend(cards)
@@ -7008,6 +7391,17 @@ Return a strictly valid JSON object matching this schema:
                     "new_cards": cards
                 })
 
+            # Check again after batch completes
+            if getattr(self._cards_engine, "_cards_cancel_requested", False) or getattr(self._cards_engine, "_cancel_requested", False):
+                self._notify_frontend("cards-progress", {
+                    "status": "cancelled",
+                    "message": f"Cancelled by user. Kept {len(all_new)} cards generated so far.",
+                    "current_slide": end_s,
+                    "total_slides": total_slides,
+                    "generated": len(all_new)
+                })
+                return self.state.normal_cards
+
             # Pacing delay between batches to stay comfortably below 15 RPM
             if b_idx < total_batches - 1:
                 time.sleep(2.0)
@@ -7020,6 +7414,14 @@ Return a strictly valid JSON object matching this schema:
             "generated": len(all_new)
         })
         return self.state.normal_cards
+
+    def cancel_cards_generation(self) -> dict:
+        try:
+            if hasattr(self, "_cards_engine") and self._cards_engine:
+                self._cards_engine._cards_cancel_requested = True
+            return {"success": True, "message": "Card generation cancelled"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
 
     def save_card(self, idx: int, card_dict: dict) -> dict:
         if 0 <= idx < len(self.state.normal_cards):
@@ -7101,8 +7503,9 @@ Return a strictly valid JSON object matching this schema:
 
     def cancel_ai_notes_generation(self) -> dict:
         try:
-            if hasattr(self, "_notes_engine") and hasattr(self._notes_engine, "_cards_engine") and self._notes_engine._cards_engine:
-                self._notes_engine._cards_engine._cancel_requested = True
+            engine = getattr(getattr(self, "_notes_engine", None), "_cards_engine", None) or getattr(self, "_cards_engine", None)
+            if engine:
+                engine._notes_cancel_requested = True
             self._notes_generation_status = {
                 "active": False,
                 "model": "",
@@ -7118,8 +7521,10 @@ Return a strictly valid JSON object matching this schema:
         if not self.state.presentation:
             return {"success": False, "error": "No presentation loaded. Please open a lecture first."}
 
-        if hasattr(self, "_notes_engine") and hasattr(self._notes_engine, "_cards_engine") and self._notes_engine._cards_engine:
-            self._notes_engine._cards_engine._cancel_requested = False
+        engine = getattr(getattr(self, "_notes_engine", None), "_cards_engine", None) or getattr(self, "_cards_engine", None)
+        if engine:
+            engine._notes_cancel_requested = False
+            engine._cancel_requested = False
 
         target_model = "gemini-4-hydrogen"
         start_time = time.time()
@@ -7131,9 +7536,9 @@ Return a strictly valid JSON object matching this schema:
         }
 
         def _on_status(msg: str, model: str = None):
-            if hasattr(self, "_notes_engine") and hasattr(self._notes_engine, "_cards_engine") and self._notes_engine._cards_engine:
-                if getattr(self._notes_engine._cards_engine, "_cancel_requested", False):
-                    raise InterruptedError("Generation cancelled by user.")
+            cur_engine = getattr(getattr(self, "_notes_engine", None), "_cards_engine", None) or getattr(self, "_cards_engine", None)
+            if cur_engine and (getattr(cur_engine, "_notes_cancel_requested", False) or getattr(cur_engine, "_cancel_requested", False)):
+                raise InterruptedError("Generation cancelled by user.")
             self._notes_generation_status["message"] = msg
             if model:
                 self._notes_generation_status["model"] = model
@@ -7666,11 +8071,13 @@ Output ONLY the bullet points, written directly as style rules."""
             try:
                 app = AppKit.NSApplication.sharedApplication()
                 if app:
-                    if theme_mode == "dark" or (theme_mode == "system" and is_dark):
+                    if theme_mode == "dark":
                         app_appearance = NSAppearance.appearanceNamed_(NSAppearanceNameDarkAqua)
-                    elif theme_mode == "light" or (theme_mode == "system" and not is_dark):
+                    elif theme_mode == "light":
                         app_appearance = NSAppearance.appearanceNamed_(NSAppearanceNameAqua)
                     else:
+                        # "system" mode: clear appearance override so NSApplication and WKWebView
+                        # naturally track the macOS system appearance immediately.
                         app_appearance = None
                     app.setAppearance_(app_appearance)
             except Exception as e:
@@ -7680,6 +8087,30 @@ Output ONLY the bullet points, written directly as style rules."""
             return {"success": True}
         except Exception as e:
             return {"success": False, "error": str(e)}
+
+    def get_system_is_dark(self) -> bool:
+        if not HAS_COCOA:
+            return False
+        try:
+            app = AppKit.NSApplication.sharedApplication()
+            # Temporarily clear override to inspect true effective appearance if in system mode
+            current_override = app.appearance()
+            app.setAppearance_(None)
+            eff = app.effectiveAppearance()
+            matched = eff.bestMatchFromAppearancesWithNames_([
+                NSAppearanceNameAqua,
+                NSAppearanceNameDarkAqua
+            ])
+            is_dark = (matched == NSAppearanceNameDarkAqua)
+            if current_override is not None:
+                app.setAppearance_(current_override)
+            return is_dark
+        except Exception:
+            try:
+                defaults = AppKit.NSUserDefaults.standardUserDefaults()
+                return defaults.stringForKey_("AppleInterfaceStyle") == "Dark"
+            except Exception:
+                return False
 
     def set_target_deck(self, deck_name: str) -> dict:
         self.state.target_deck = deck_name
@@ -7975,7 +8406,7 @@ Output ONLY the bullet points, written directly as style rules."""
             else:
                 user_display = "Anonymous Student"
 
-        footer_parts = ["Synapse v2.2.0", active_tab.upper()]
+        footer_parts = [f"Synapse v{CURRENT_VERSION}", active_tab.upper()]
         if self.state.pptx_path:
             lec_name = self.state.pptx_path.name
             slide_no = self.state.current_slide_idx + 1
@@ -8037,7 +8468,7 @@ Output ONLY the bullet points, written directly as style rules."""
                     data=body,
                     headers={
                         "Content-Type": f"multipart/form-data; boundary={boundary}",
-                        "User-Agent": "Synapse-Feedback/2.2.0"
+                        "User-Agent": f"Synapse-Feedback/{CURRENT_VERSION}"
                     },
                     method="POST"
                 )
@@ -8048,7 +8479,7 @@ Output ONLY the bullet points, written directly as style rules."""
                     data=json_data,
                     headers={
                         "Content-Type": "application/json",
-                        "User-Agent": "Synapse-Feedback/2.2.0"
+                        "User-Agent": f"Synapse-Feedback/{CURRENT_VERSION}"
                     },
                     method="POST"
                 )
