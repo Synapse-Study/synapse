@@ -16,13 +16,13 @@
 ---
 
 ## Preview
-
 <p align="center">
-  <img src="https://github.com/user-attachments/assets/8073830b-fa92-459c-b8df-daf6ec35656f" alt="Synapse Overview" width="100%" /><br /><br />
-  <img src="https://github.com/user-attachments/assets/addd6e9c-17fe-461b-9c37-b12b1b216200" alt="Synapse Preview 2" width="100%" /><br /><br />
-  <img src="https://github.com/user-attachments/assets/ec41bd28-1b3f-499b-8c4e-2e44369b5f9e" alt="Synapse Preview 3" width="100%" /><br /><br />
-  <img src="https://github.com/user-attachments/assets/000ad1d0-b4a5-4dd5-972e-71bc5e7796cc" alt="Synapse Preview 4" width="100%" /><br /><br />
-  <img src="https://github.com/user-attachments/assets/b0bb01c9-689c-4168-aaab-455af3e38eb1" alt="Synapse Preview 5" width="100%" />
+  <img src="https://github.com/user-attachments/assets/f100a732-6e02-4fcd-ad32-b057aa291699" alt="Synapse Overview" width="100%" /><br /><br />
+  <img src="https://github.com/user-attachments/assets/037d73d6-9c4b-44e2-810f-48ffcad6f756" alt="Synapse Preview 2" width="100%" /><br /><br />
+  <img src="https://github.com/user-attachments/assets/d4ea0885-8f6d-415b-83c9-e87ba6e4a4a9" alt="Synapse Preview 3" width="100%" /><br /><br />
+  <img src="https://github.com/user-attachments/assets/58eb1a43-a2a6-416f-9df0-54af3b5ab436" alt="Synapse Preview 4" width="100%" /><br /><br />
+  <img src="https://github.com/user-attachments/assets/83bdfb80-06a2-41fb-abb5-4a91a6ea09ac" alt="Synapse Preview 5" width="100%" /><br /><br />
+  <img src="https://github.com/user-attachments/assets/333b1072-35e3-4983-bbb8-4f9be89e6921" alt="Synapse Preview 6" width="100%" />
 </p>
 
 ---
