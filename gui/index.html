@@ -10,6 +10,10 @@
     window.tailwind.config = {
       darkMode: 'class',
     };
+    function isChristmasSeason() {
+      const now = new Date();
+      return (now.getMonth() === 11 && now.getDate() >= 1 && now.getDate() <= 26);
+    }
     try {
       const savedTheme = localStorage.getItem('synapse_theme') || 'system';
       const isDark = (savedTheme === 'dark') || (savedTheme === 'system' && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
@@ -18,7 +22,11 @@
       } else {
         document.documentElement.classList.remove('dark');
       }
-      const savedAccent = localStorage.getItem('synapse_accent') || 'cobalt';
+      let savedAccent = localStorage.getItem('synapse_accent') || 'cobalt';
+      if (savedAccent === 'christmas' && !isChristmasSeason()) {
+        savedAccent = 'cobalt';
+        localStorage.setItem('synapse_accent', 'cobalt');
+      }
       document.documentElement.dataset.accent = savedAccent;
     } catch (e) {}
   </script>
@@ -228,6 +236,38 @@
       --accent-cobalt-hover: #64748B;
     }
 
+    /* Christmas / Festive Winter (Rich Festive Crimson & Evergreen Pine) */
+    html[data-accent="christmas"], body[data-accent="christmas"] {
+      --bg-app: #F4F7F5;
+      --bg-card: #FFFFFF;
+      --bg-card-subtle: #EDF5F0;
+      --border-card: #CFE3D7;
+      --canvas-viewport-bg: #E7EFEA;
+      --btn-inactive-bg: #FFFFFF;
+      --btn-inactive-hover: #EDF5F0;
+      --btn-inactive-border: #CFE3D7;
+      --accent-cobalt: #C5221F;
+      --accent-cobalt-hover: #9E1A17;
+      --accent-sage-bg: #E6F4EA;
+      --accent-sage-text: #166534;
+      --accent-sage-border: #BBF7D0;
+    }
+    html.dark[data-accent="christmas"], body.dark[data-accent="christmas"] {
+      --bg-app: #08120D;
+      --bg-card: #0F1E16;
+      --bg-card-subtle: #162B20;
+      --border-card: #1E3C2C;
+      --canvas-viewport-bg: #050B08;
+      --btn-inactive-bg: #0F1E16;
+      --btn-inactive-hover: #162B20;
+      --btn-inactive-border: #1E3C2C;
+      --accent-cobalt: #EF4444;
+      --accent-cobalt-hover: #DC2626;
+      --accent-sage-bg: rgba(22, 101, 52, 0.45);
+      --accent-sage-text: #4ADE80;
+      --accent-sage-border: rgba(74, 222, 128, 0.4);
+    }
+
     /* Header Brand Icon Gradients */
     html[data-accent="amber"] .bg-gradient-to-tr.from-blue-700.to-indigo-600,
     body[data-accent="amber"] .bg-gradient-to-tr.from-blue-700.to-indigo-600 {
@@ -249,6 +289,10 @@
     body[data-accent="slate"] .bg-gradient-to-tr.from-blue-700.to-indigo-600 {
       background: linear-gradient(to top right, #334155, #64748B) !important;
     }
+    html[data-accent="christmas"] .bg-gradient-to-tr.from-blue-700.to-indigo-600,
+    body[data-accent="christmas"] .bg-gradient-to-tr.from-blue-700.to-indigo-600 {
+      background: linear-gradient(to top right, #B91C1C, #15803D) !important;
+    }
 
     /* Action Button Gradients */
     html[data-accent="amber"] #btn-generate-ai-notes, body[data-accent="amber"] #btn-generate-ai-notes {
@@ -265,6 +309,9 @@
     }
     html[data-accent="slate"] #btn-generate-ai-notes, body[data-accent="slate"] #btn-generate-ai-notes {
       background: linear-gradient(to right, #475569, #334155) !important;
+    }
+    html[data-accent="christmas"] #btn-generate-ai-notes, body[data-accent="christmas"] #btn-generate-ai-notes {
+      background: linear-gradient(to right, #DC2626, #166534) !important;
     }
 
     /* ── Palette Utility Overrides (Apply Accent to Tailwind Classes) ── */
@@ -337,6 +384,20 @@
     html.dark[data-accent="slate"] .dark\:text-blue-300, body.dark[data-accent="slate"] .dark\:text-blue-300 { color: #CBD5E1 !important; }
     html.dark[data-accent="slate"] .dark\:bg-blue-950\/40, html.dark[data-accent="slate"] .dark\:bg-blue-950\/50, html.dark[data-accent="slate"] .dark\:bg-blue-950\/60, html.dark[data-accent="slate"] .dark\:bg-blue-950 { background-color: rgba(30, 41, 59, 0.45) !important; }
     html.dark[data-accent="slate"] .dark\:border-blue-800, html.dark[data-accent="slate"] .dark\:border-blue-800\/80 { border-color: rgba(51, 65, 85, 0.6) !important; }
+
+    /* Christmas / Festive Winter Overrides */
+    html[data-accent="christmas"] .bg-blue-600, body[data-accent="christmas"] .bg-blue-600 { background-color: #DC2626 !important; }
+    html[data-accent="christmas"] .hover\:bg-blue-700:hover, body[data-accent="christmas"] .hover\:bg-blue-700:hover { background-color: #B91C1C !important; }
+    html[data-accent="christmas"] .text-blue-600, body[data-accent="christmas"] .text-blue-600 { color: #DC2626 !important; }
+    html[data-accent="christmas"] .text-blue-700, body[data-accent="christmas"] .text-blue-700 { color: #B91C1C !important; }
+    html[data-accent="christmas"] .border-blue-600, body[data-accent="christmas"] .border-blue-600 { border-color: #DC2626 !important; }
+    html[data-accent="christmas"] .border-l-blue-500, body[data-accent="christmas"] .border-l-blue-500 { border-left-color: #DC2626 !important; }
+    html[data-accent="christmas"] .bg-blue-50, body[data-accent="christmas"] .bg-blue-50 { background-color: #FEF2F2 !important; }
+    html[data-accent="christmas"] .border-blue-200, body[data-accent="christmas"] .border-blue-200 { border-color: #FECACA !important; }
+    html.dark[data-accent="christmas"] .dark\:text-blue-400, body.dark[data-accent="christmas"] .dark\:text-blue-400 { color: #F87171 !important; }
+    html.dark[data-accent="christmas"] .dark\:text-blue-300, body.dark[data-accent="christmas"] .dark\:text-blue-300 { color: #FCA5A5 !important; }
+    html.dark[data-accent="christmas"] .dark\:bg-blue-950\/40, html.dark[data-accent="christmas"] .dark\:bg-blue-950\/50, html.dark[data-accent="christmas"] .dark\:bg-blue-950\/60, html.dark[data-accent="christmas"] .dark\:bg-blue-950 { background-color: rgba(127, 29, 29, 0.45) !important; }
+    html.dark[data-accent="christmas"] .dark\:border-blue-800, html.dark[data-accent="christmas"] .dark\:border-blue-800\/80 { border-color: rgba(153, 27, 27, 0.6) !important; }
 
     body {
       background-color: var(--bg-app);
@@ -745,18 +806,80 @@
       border: 0 !important;
       pointer-events: none !important;
     }
+
+    /* ── Festive Christmas Lights Garland Styles ── */
+    .festive-bulb-red {
+      filter: drop-shadow(0 0 4px #EF4444);
+      animation: festive-twinkle-red 1.6s ease-in-out infinite alternate;
+    }
+    .festive-bulb-gold {
+      filter: drop-shadow(0 0 4px #F59E0B);
+      animation: festive-twinkle-gold 2.0s ease-in-out infinite alternate;
+    }
+    .festive-bulb-green {
+      filter: drop-shadow(0 0 4px #10B981);
+      animation: festive-twinkle-green 1.8s ease-in-out infinite alternate;
+    }
+    .festive-bulb-blue {
+      filter: drop-shadow(0 0 4px #38BDF8);
+      animation: festive-twinkle-blue 2.2s ease-in-out infinite alternate;
+    }
+    .festive-bulb-pink {
+      filter: drop-shadow(0 0 4px #EC4899);
+      animation: festive-twinkle-pink 1.7s ease-in-out infinite alternate;
+    }
+
+    @keyframes festive-twinkle-red {
+      0% { filter: drop-shadow(0 0 5px rgba(239, 68, 68, 0.95)); opacity: 1; }
+      100% { filter: drop-shadow(0 0 1.5px rgba(239, 68, 68, 0.35)); opacity: 0.65; }
+    }
+    @keyframes festive-twinkle-gold {
+      0% { filter: drop-shadow(0 0 1.5px rgba(245, 158, 11, 0.35)); opacity: 0.65; }
+      100% { filter: drop-shadow(0 0 5px rgba(245, 158, 11, 0.95)); opacity: 1; }
+    }
+    @keyframes festive-twinkle-green {
+      0% { filter: drop-shadow(0 0 5px rgba(16, 185, 129, 0.9)); opacity: 0.95; }
+      100% { filter: drop-shadow(0 0 1.5px rgba(16, 185, 129, 0.35)); opacity: 0.6; }
+    }
+    @keyframes festive-twinkle-blue {
+      0% { filter: drop-shadow(0 0 1.5px rgba(56, 189, 248, 0.35)); opacity: 0.6; }
+      100% { filter: drop-shadow(0 0 5px rgba(56, 189, 248, 0.95)); opacity: 1; }
+    }
+    @keyframes festive-twinkle-pink {
+      0% { filter: drop-shadow(0 0 5px rgba(236, 72, 153, 0.9)); opacity: 0.95; }
+      100% { filter: drop-shadow(0 0 1.5px rgba(236, 72, 153, 0.35)); opacity: 0.65; }
+    }
   </style>
 </head>
 <body class="h-screen w-screen flex flex-col overflow-hidden">
+  <!-- Festive Snowfall Canvas (overlay across page, non-blocking) -->
+  <canvas id="festive-snow-canvas" style="z-index: 45;" class="fixed inset-0 pointer-events-none hidden w-full h-full"></canvas>
 
   <!-- ========================================================================= -->
   <!-- 1. TOP NAVIGATION BAR                                                     -->
   <!-- ========================================================================= -->
   <header id="app-top-header" class="relative z-40 h-16 px-6 bg-[var(--bg-card)] border-b border-[var(--border-card)] flex items-center justify-between shrink-0 transition-all duration-300">
+    <!-- Festive Christmas Lights Garland dangling below top menu bar -->
+    <div id="festive-lights-garland" class="hidden absolute -bottom-[18px] left-0 right-0 h-[22px] flex overflow-hidden pointer-events-none z-50 select-none"></div>
+
     <!-- Brand / Title -->
     <div class="flex items-center gap-3 cursor-pointer" onclick="openAboutModal()" title="About Synapse">
-      <div class="w-9 h-9 rounded-xl bg-gradient-to-tr from-blue-700 to-indigo-600 flex items-center justify-center text-white shadow-sm ring-1 ring-white/20">
+      <div id="synapse-logo-icon-wrapper" class="relative w-9 h-9 rounded-xl bg-gradient-to-tr from-blue-700 to-indigo-600 flex items-center justify-center text-white shadow-sm ring-1 ring-white/20">
         <i data-lucide="sparkles" class="w-5 h-5"></i>
+        <!-- Festive Santa Hat for Synapse Logo (top-left corner, rotated 45deg anticlockwise, bauble hanging left) -->
+        <svg id="synapse-festive-hat" class="hidden absolute -top-[14px] -left-[18px] w-8 h-8 select-none pointer-events-none z-20 drop-shadow-md transform -rotate-45" viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <!-- Red Hat Body (flipped) -->
+          <path d="M 31 26 C 28 13 18 5 6 10 C 5 16 8 22 10 26 Z" fill="#DC2626"/>
+          <path d="M 19 9 C 13 12 8 18 10 26 C 12 26 15 26 18 26 C 17 19 19 13 19 9 Z" fill="#991B1B" opacity="0.45"/>
+          <!-- White Fluffy Trim (flipped) -->
+          <rect x="9" y="23" width="24" height="5" rx="2.5" fill="#FFFFFF" filter="drop-shadow(0 1px 1px rgba(0,0,0,0.2))"/>
+          <circle cx="31" cy="25.5" r="2.8" fill="#FFFFFF"/>
+          <circle cx="25" cy="25.5" r="3.2" fill="#FFFFFF"/>
+          <circle cx="19" cy="25.5" r="3.2" fill="#FFFFFF"/>
+          <circle cx="13" cy="25.5" r="2.8" fill="#FFFFFF"/>
+          <!-- White Pom-pom Ball (flipped: hanging to the left) -->
+          <circle cx="6" cy="10" r="3.8" fill="#FFFFFF" filter="drop-shadow(0 1px 2px rgba(0,0,0,0.25))"/>
+        </svg>
       </div>
       <div>
         <h1 class="text-base font-bold tracking-tight text-[var(--text-primary)] leading-tight flex items-center gap-2">
@@ -932,6 +1055,9 @@
 
         <!-- Content Container (z-10 relative) -->
         <div class="relative z-10 flex flex-col gap-6">
+
+          <!-- Global GitHub Announcements Banner Container -->
+          <div id="home-announcements-container" class="empty:hidden flex flex-col gap-3"></div>
         
         <!-- Welcome & Fast Actions Header -->
         <div class="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-2 border-b border-[var(--border-card)]">
@@ -1099,12 +1225,13 @@
 
               <!-- Mascot & Title Header -->
               <div class="flex items-start gap-3.5">
-                <div class="w-12 h-12 rounded-2xl bg-blue-100/60 dark:bg-blue-900/40 border border-blue-200 dark:border-blue-800 p-1 flex items-center justify-center shrink-0 shadow-xs">
-                  <img src="pigeon_doctor_clean.png" alt="Dr. Fledge" class="w-10 h-10 object-contain drop-shadow-xs" onerror="this.onerror=null;this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🐦</text></svg>';" />
+                <div id="home-mascot-wrapper" class="relative w-12 h-12 rounded-2xl bg-blue-100/60 dark:bg-blue-900/40 border border-blue-200 dark:border-blue-800 p-1 flex items-center justify-center shrink-0 shadow-xs">
+                  <img id="home-mascot-img" src="pigeon_doctor_clean.png" alt="Dr. Fledge" class="w-10 h-10 object-contain drop-shadow-xs" onerror="this.onerror=null;this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🐦</text></svg>';" />
                 </div>
                 <div class="min-w-0 flex-1">
                   <div class="flex items-center gap-1.5 flex-wrap">
                     <span id="fact-topic-badge" class="text-[10px] font-semibold text-blue-600 dark:text-blue-400">Anatomy · Neurovascular</span>
+                    <span id="mascot-festive-badge" class="hidden text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-red-100 dark:bg-red-950/70 text-red-700 dark:text-red-300 border border-red-200/60 dark:border-red-800/50">🎄 Winter Clinic</span>
                   </div>
                   <h4 id="fact-title" class="text-sm font-bold text-[var(--text-primary)] leading-snug mt-0.5">Recurrent Laryngeal Nerve Asymmetry</h4>
                 </div>
@@ -1915,44 +2042,39 @@
       <!-- ===================================================================== -->
       <!-- TAB 5: AI SLIDE & LECTURE CHAT (KCL ONEDRIVE ENABLED)                 -->
       <!-- ===================================================================== -->
-      <section id="tab-chat" class="tab-pane hidden flex-1 flex flex-col overflow-hidden p-6 gap-4">
-        <!-- Chat Header & Context Bar -->
-        <div class="bg-[var(--bg-card)] rounded-2xl border border-[var(--border-card)] p-4 shadow-sm flex items-center justify-between shrink-0 gap-3 flex-wrap transition-colors">
-          <div class="flex items-center gap-3">
-            <div class="w-10 h-10 rounded-xl bg-blue-50 dark:bg-blue-950/40 flex items-center justify-center shrink-0 border border-blue-100 dark:border-blue-900/40 shadow-xs overflow-hidden">
-              <img src="pigeon_doctor_clean.png" alt="Dr. Fledge" class="w-8 h-8 object-contain" onerror="this.onerror=null;this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🐦</text></svg>';" />
-            </div>
-            <div>
-              <div class="flex items-center gap-2 flex-wrap">
-                <h2 class="text-base font-bold text-[var(--text-primary)] tracking-tight">Dr. Fledge · AI Medical Tutor</h2>
-                <span id="chat-model-badge" class="px-2 py-0.5 rounded-full text-[10px] font-mono font-semibold bg-blue-50 text-blue-700 dark:bg-blue-950/40 dark:text-blue-300 border border-blue-200/50 dark:border-blue-800/40">⚡ gemini-3.5-flash-lite <span class="font-normal opacity-75">(Quick)</span></span>
-                <span id="chat-index-badge" class="px-2 py-0.5 rounded-full text-[10px] font-mono font-semibold bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300 border border-emerald-200/50 dark:border-emerald-800/40 cursor-pointer" onclick="openSettingsModal()" title="Persistent SQLite FTS5 Lecture Index Active (Click to view)">🗄️ Index Ready</span>
-              </div>
-              <p id="chat-header-desc" class="text-xs text-[var(--text-dim)]">Dr. Fledge on duty. Ask about slide structures, physiological mechanisms, or clinical correlates.</p>
-            </div>
+      <section id="tab-chat" class="tab-pane hidden flex-1 flex flex-col overflow-hidden p-2 gap-2">
+        <!-- Compact Status & Control Bar (like Questions tab) -->
+        <div class="flex items-center justify-between px-3 py-1.5 rounded-xl bg-[var(--bg-card)] border border-[var(--border-card)] shadow-xs shrink-0 gap-2 flex-wrap">
+          <!-- Left: Identity & Badges -->
+          <div class="flex items-center gap-2 shrink-0">
+            <img src="pigeon_doctor_clean.png" alt="Dr. Fledge" class="w-5 h-5 rounded-md object-contain shrink-0" onerror="this.onerror=null;this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🐦</text></svg>';" />
+            <span class="text-xs font-bold text-[var(--text-primary)]">Dr. Fledge</span>
+            <span id="chat-model-badge" class="px-2 py-0.5 rounded-full text-[10px] font-mono font-semibold bg-blue-50 text-blue-700 dark:bg-blue-950/40 dark:text-blue-300 border border-blue-200/50 dark:border-blue-800/40">⚡ Quick</span>
+            <span id="chat-index-badge" class="px-2 py-0.5 rounded-full text-[10px] font-mono font-semibold bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300 border border-emerald-200/50 dark:border-emerald-800/40 cursor-pointer hidden md:inline-flex" onclick="openSettingsModal()" title="Persistent SQLite FTS5 Lecture Index Active (Click to view)">🗄️ Index Ready</span>
+            <span id="chat-header-desc" class="hidden"></span>
           </div>
 
-          <!-- Scope, Mode & Lecture Selection Controls -->
-          <div class="flex items-center gap-2.5 flex-wrap">
+          <!-- Right: Controls -->
+          <div class="flex items-center gap-2 shrink-0">
             <!-- Response Depth: Quick vs Complex -->
-            <div class="flex items-center gap-1.5">
-              <span class="text-xs font-semibold text-[var(--text-secondary)]">Mode:</span>
+            <div class="flex items-center gap-1">
+              <span class="text-[11px] font-medium text-[var(--text-secondary)]">Mode:</span>
               <div class="inline-flex rounded-full p-0.5 bg-slate-100 dark:bg-neutral-800 border border-[var(--border-card)] shadow-2xs">
-                <button id="btn-chat-mode-quick" type="button" onclick="setChatMode('quick')" class="px-2.5 py-1 rounded-full text-xs font-semibold transition-all bg-white dark:bg-neutral-700 text-blue-600 dark:text-blue-400 shadow-xs flex items-center gap-1" title="⚡ Quick Mode: Powered by gemini-3.5-flash-lite (1,500 req/day)">
-                  <i data-lucide="zap" class="w-3.5 h-3.5 text-amber-500"></i>
+                <button id="btn-chat-mode-quick" type="button" onclick="setChatMode('quick')" class="px-2 py-0.5 rounded-full text-[11px] font-semibold transition-all bg-white dark:bg-neutral-700 text-blue-600 dark:text-blue-400 shadow-xs flex items-center gap-1" title="⚡ Quick Mode: Powered by gemini-3.5-flash-lite (1,500 req/day)">
+                  <i data-lucide="zap" class="w-3 h-3 text-amber-500"></i>
                   <span>Quick</span>
                 </button>
-                <button id="btn-chat-mode-complex" type="button" onclick="setChatMode('complex')" class="px-2.5 py-1 rounded-full text-xs font-semibold transition-all text-[var(--text-dim)] hover:text-[var(--text-primary)] flex items-center gap-1" title="🧠 Complex Mode: Powered by gemini-4-hydrogen (20 req/day · Deeper reasoning)">
-                  <i data-lucide="brain" class="w-3.5 h-3.5 text-purple-500"></i>
+                <button id="btn-chat-mode-complex" type="button" onclick="setChatMode('complex')" class="px-2 py-0.5 rounded-full text-[11px] font-semibold transition-all text-[var(--text-dim)] hover:text-[var(--text-primary)] flex items-center gap-1" title="🧠 Complex Mode: Powered by gemini-4-hydrogen (20 req/day · Deeper reasoning)">
+                  <i data-lucide="brain" class="w-3 h-3 text-purple-500"></i>
                   <span>Complex</span>
                 </button>
               </div>
             </div>
 
-            <div class="flex items-center gap-1.5">
-              <span class="text-xs font-semibold text-[var(--text-secondary)]">Scope:</span>
-              <select id="chat-scope-select" onchange="onChatScopeChanged()" class="text-xs font-semibold px-3 py-1.5 rounded-full border border-[var(--border-card)] bg-[var(--btn-inactive-bg)] text-[var(--text-primary)] focus:outline-none shadow-xs">
-                <option value="slide">📌 Current Slide & Labels</option>
+            <div class="flex items-center gap-1">
+              <span class="text-[11px] font-medium text-[var(--text-secondary)]">Scope:</span>
+              <select id="chat-scope-select" onchange="onChatScopeChanged()" class="text-[11px] font-semibold px-2 py-0.5 rounded-lg border border-[var(--border-card)] bg-[var(--btn-inactive-bg)] text-[var(--text-primary)] focus:outline-none shadow-xs">
+                <option value="slide">📌 Current Slide &amp; Labels</option>
                 <option value="lecture">📖 Active Lecture (All Slides)</option>
                 <option value="block">📚 KCL Block (FBS / PAS)...</option>
                 <option value="onedrive_lecture">🏫 KCL OneDrive Lecture...</option>
@@ -1961,40 +2083,45 @@
             </div>
 
             <!-- Specific KCL Block Selector (Shown when scope is block) -->
-            <div id="chat-block-picker-wrapper" class="hidden flex items-center gap-1.5">
-              <select id="chat-block-select" onchange="onChatBlockSelected()" class="text-xs font-semibold max-w-xs truncate px-3 py-1.5 rounded-full border border-purple-200 dark:border-purple-900/60 bg-purple-50/50 dark:bg-purple-950/30 text-purple-900 dark:text-purple-200 focus:outline-none shadow-xs">
+            <div id="chat-block-picker-wrapper" class="hidden flex items-center gap-1">
+              <select id="chat-block-select" onchange="onChatBlockSelected()" class="text-[11px] font-semibold max-w-[140px] truncate px-2 py-0.5 rounded-lg border border-purple-200 dark:border-purple-900/60 bg-purple-50/50 dark:bg-purple-950/30 text-purple-900 dark:text-purple-200 focus:outline-none shadow-xs">
                 <option value="">Loading KCL Blocks...</option>
               </select>
             </div>
 
             <!-- Specific KCL OneDrive Lecture Selector (Shown when scope is onedrive_lecture) -->
-            <div id="chat-onedrive-picker-wrapper" class="hidden flex items-center gap-1.5">
-              <select id="chat-onedrive-lecture-select" onchange="onOneDriveLectureSelected()" class="text-xs font-medium max-w-xs truncate px-3 py-1.5 rounded-full border border-blue-200 dark:border-blue-900/60 bg-blue-50/50 dark:bg-blue-950/30 text-blue-900 dark:text-blue-200 focus:outline-none shadow-xs">
+            <div id="chat-onedrive-picker-wrapper" class="hidden flex items-center gap-1">
+              <select id="chat-onedrive-lecture-select" onchange="onOneDriveLectureSelected()" class="text-[11px] font-medium max-w-[140px] truncate px-2 py-0.5 rounded-lg border border-blue-200 dark:border-blue-900/60 bg-blue-50/50 dark:bg-blue-950/30 text-blue-900 dark:text-blue-200 focus:outline-none shadow-xs">
                 <option value="">Loading KCL OneDrive lectures...</option>
               </select>
-              <button onclick="openSelectedKclLectureInStudio()" id="btn-open-onedrive-studio" class="px-3 py-1.5 rounded-full border border-[var(--border-card)] bg-[var(--btn-inactive-bg)] hover:bg-blue-50 hover:text-blue-600 text-[var(--btn-inactive-text)] text-xs font-semibold flex items-center gap-1 transition-colors" title="Open this lecture in Studio Canvas">
-                <i data-lucide="external-link" class="w-3.5 h-3.5"></i>
-                <span>Open in Studio</span>
+              <button onclick="openSelectedKclLectureInStudio()" id="btn-open-onedrive-studio" class="px-2 py-0.5 rounded-lg border border-[var(--border-card)] bg-[var(--btn-inactive-bg)] hover:bg-blue-50 hover:text-blue-600 text-[var(--btn-inactive-text)] text-[11px] font-semibold flex items-center gap-1 transition-colors" title="Open this lecture in Studio Canvas">
+                <i data-lucide="external-link" class="w-3 h-3"></i>
+                <span>Open</span>
               </button>
             </div>
 
-            <button onclick="clearChatHistory()" class="p-2 rounded-full border border-[var(--border-card)] bg-[var(--btn-inactive-bg)] hover:bg-[var(--btn-inactive-hover)] text-[var(--btn-inactive-text)] shadow-xs transition-colors" title="Clear Chat History">
-              <i data-lucide="trash-2" class="w-4 h-4"></i>
+            <!-- Toggle Context Sidebar button -->
+            <button onclick="toggleChatContextSidebar()" id="btn-toggle-chat-context" class="p-1 rounded-lg border border-[var(--border-card)] bg-[var(--btn-inactive-bg)] hover:bg-[var(--btn-inactive-hover)] text-[var(--btn-inactive-text)] shadow-xs transition-colors" title="Toggle Slide Context & Starters sidebar">
+              <i data-lucide="panel-left" class="w-3.5 h-3.5"></i>
+            </button>
+
+            <button onclick="clearChatHistory()" class="p-1 rounded-lg border border-[var(--border-card)] bg-[var(--btn-inactive-bg)] hover:bg-[var(--btn-inactive-hover)] text-[var(--btn-inactive-text)] hover:text-red-600 shadow-xs transition-colors" title="Clear Chat History">
+              <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
             </button>
           </div>
         </div>
 
         <!-- Chat Workspace Layout: Left Context Card + Main Chat Stream -->
-        <div class="flex-1 flex overflow-hidden gap-4">
+        <div class="flex-1 flex overflow-hidden gap-2">
           
           <!-- Left Context Info Card -->
-          <div class="w-72 shrink-0 bg-[var(--bg-card)] rounded-2xl border border-[var(--border-card)] p-4 shadow-sm flex flex-col gap-3 overflow-hidden transition-colors">
-            <h3 class="text-xs font-bold uppercase tracking-wider text-[var(--text-secondary)] flex items-center gap-1.5">
+          <div id="chat-context-sidebar" class="w-64 shrink-0 bg-[var(--bg-card)] rounded-xl border border-[var(--border-card)] p-3 shadow-xs flex flex-col gap-2 overflow-hidden transition-colors">
+            <h3 class="text-[11px] font-bold uppercase tracking-wider text-[var(--text-secondary)] flex items-center gap-1.5">
               <i data-lucide="info" class="w-3.5 h-3.5 text-blue-500"></i>
               <span>Active Tutor Context</span>
             </h3>
             
-            <div id="chat-context-display" class="p-3 rounded-xl border border-[var(--border-card)] bg-[var(--bg-card-subtle)] text-xs space-y-1.5 text-[var(--text-secondary)]">
+            <div id="chat-context-display" class="p-2.5 rounded-lg border border-[var(--border-card)] bg-[var(--bg-card-subtle)] text-[11px] space-y-1 text-[var(--text-secondary)]">
               <div><strong class="text-[var(--text-primary)]">Lecture:</strong> <span id="chat-context-lecture">None loaded</span></div>
               <div><strong class="text-[var(--text-primary)]">Slide:</strong> <span id="chat-context-slide">Slide 1</span></div>
               <div><strong class="text-[var(--text-primary)]">View:</strong> <span id="chat-context-view">Full Diagram</span></div>
@@ -2002,47 +2129,43 @@
             </div>
 
             <!-- AI Model Mode & Quota Info Box -->
-            <div class="p-3 rounded-xl border border-[var(--border-card)] bg-[var(--bg-card-subtle)] flex flex-col gap-2">
+            <div class="p-2.5 rounded-lg border border-[var(--border-card)] bg-[var(--bg-card-subtle)] flex flex-col gap-1.5">
               <div class="flex items-center justify-between">
-                <span class="text-[11px] font-bold uppercase tracking-wider text-[var(--text-secondary)]">Response Mode</span>
+                <span class="text-[10px] font-bold uppercase tracking-wider text-[var(--text-secondary)]">Response Mode</span>
                 <span id="chat-mode-indicator-pill" class="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 dark:bg-blue-950/40 dark:text-blue-300 border border-blue-200/50">⚡ Quick</span>
               </div>
-              <div id="chat-mode-explanation" class="text-[11px] leading-relaxed text-[var(--text-dim)]">
-                ⚡ <b>Quick Mode:</b> Uses <code>gemini-3.5-flash-lite</code> with automatic fallback to <code>gemini-3-flash-preview</code>. High quota (1,500 req/day).
-              </div>
-              <div class="text-[10px] text-amber-600 dark:text-amber-400 font-medium border-t border-[var(--border-card)] pt-1.5 flex items-start gap-1">
-                <i data-lucide="alert-circle" class="w-3.5 h-3.5 shrink-0 mt-0.5"></i>
-                <span>Note: Complex models (Gemini 4 Hydrogen, Gemini 3.8 Flash) provide deep multi-step reasoning, but have a 20 req/day limit and will deplete quicker than Quick.</span>
+              <div id="chat-mode-explanation" class="text-[10px] leading-relaxed text-[var(--text-dim)]">
+                ⚡ <b>Quick Mode:</b> Uses <code>gemini-3.5-flash-lite</code> (1,500 req/day).
               </div>
             </div>
 
             <!-- Quick Suggestion Pills -->
-            <div class="pt-2 flex-1 flex flex-col overflow-hidden">
-              <span class="text-[11px] font-semibold text-[var(--text-dim)] uppercase tracking-wider mb-2">High-Yield Starters</span>
-              <div class="space-y-1.5 overflow-y-auto pr-1">
-                <button onclick="sendQuickPrompt('Explain the underlying physiological and anatomical mechanism shown on this slide.')" class="w-full text-left p-2.5 rounded-xl border border-[var(--border-card)] bg-[var(--btn-inactive-bg)] hover:bg-[var(--btn-inactive-hover)] text-[11px] font-medium text-[var(--text-primary)] transition-all flex items-start gap-2 shadow-xs">
-                  <span class="text-sm">💡</span>
-                  <span>Explain the underlying mechanism</span>
+            <div class="pt-1 flex-1 flex flex-col overflow-hidden">
+              <span class="text-[10px] font-semibold text-[var(--text-dim)] uppercase tracking-wider mb-1.5">High-Yield Starters</span>
+              <div class="space-y-1 overflow-y-auto pr-1">
+                <button onclick="sendQuickPrompt('Explain the underlying physiological and anatomical mechanism shown on this slide.')" class="w-full text-left p-2 rounded-lg border border-[var(--border-card)] bg-[var(--btn-inactive-bg)] hover:bg-[var(--btn-inactive-hover)] text-[11px] font-medium text-[var(--text-primary)] transition-all flex items-start gap-1.5 shadow-xs">
+                  <span class="text-xs">💡</span>
+                  <span class="line-clamp-2">Explain mechanism</span>
                 </button>
-                <button onclick="sendQuickPrompt('What are the key clinical pearls, pathology, and diagnostic signs related to this slide?')" class="w-full text-left p-2.5 rounded-xl border border-[var(--border-card)] bg-[var(--btn-inactive-bg)] hover:bg-[var(--btn-inactive-hover)] text-[11px] font-medium text-[var(--text-primary)] transition-all flex items-start gap-2 shadow-xs">
-                  <span class="text-sm">🩺</span>
-                  <span>Clinical pearls & pathology</span>
+                <button onclick="sendQuickPrompt('What are the key clinical pearls, pathology, and diagnostic signs related to this slide?')" class="w-full text-left p-2 rounded-lg border border-[var(--border-card)] bg-[var(--btn-inactive-bg)] hover:bg-[var(--btn-inactive-hover)] text-[11px] font-medium text-[var(--text-primary)] transition-all flex items-start gap-1.5 shadow-xs">
+                  <span class="text-xs">🩺</span>
+                  <span class="line-clamp-2">Clinical pearls & pathology</span>
                 </button>
-                <button onclick="sendQuickPrompt('Generate 3 high-yield MBBS exam Single Best Answer (SBA) questions based on this slide with explanations.')" class="w-full text-left p-2.5 rounded-xl border border-[var(--border-card)] bg-[var(--btn-inactive-bg)] hover:bg-[var(--btn-inactive-hover)] text-[11px] font-medium text-[var(--text-primary)] transition-all flex items-start gap-2 shadow-xs">
-                  <span class="text-sm">❓</span>
-                  <span>Generate 3 exam SBAs</span>
+                <button onclick="sendQuickPrompt('Generate 3 high-yield MBBS exam Single Best Answer (SBA) questions based on this slide with explanations.')" class="w-full text-left p-2 rounded-lg border border-[var(--border-card)] bg-[var(--btn-inactive-bg)] hover:bg-[var(--btn-inactive-hover)] text-[11px] font-medium text-[var(--text-primary)] transition-all flex items-start gap-1.5 shadow-xs">
+                  <span class="text-xs">❓</span>
+                  <span class="line-clamp-2">Generate 3 exam SBAs</span>
                 </button>
-                <button onclick="sendQuickPrompt('Give me a memorable visual or phonetic mnemonic to memorize the key terms on this slide.')" class="w-full text-left p-2.5 rounded-xl border border-[var(--border-card)] bg-[var(--btn-inactive-bg)] hover:bg-[var(--btn-inactive-hover)] text-[11px] font-medium text-[var(--text-primary)] transition-all flex items-start gap-2 shadow-xs">
-                  <span class="text-sm">🧠</span>
-                  <span>High-yield memory hook</span>
+                <button onclick="sendQuickPrompt('Give me a memorable visual or phonetic mnemonic to memorize the key terms on this slide.')" class="w-full text-left p-2 rounded-lg border border-[var(--border-card)] bg-[var(--btn-inactive-bg)] hover:bg-[var(--btn-inactive-hover)] text-[11px] font-medium text-[var(--text-primary)] transition-all flex items-start gap-1.5 shadow-xs">
+                  <span class="text-xs">🧠</span>
+                  <span class="line-clamp-2">High-yield memory hook</span>
                 </button>
-                <button onclick="sendQuickPrompt('Give me unsolicited medical wisdom as Dr. Fledge.')" class="w-full text-left p-2.5 rounded-xl border border-[var(--border-card)] bg-[var(--btn-inactive-bg)] hover:bg-[var(--btn-inactive-hover)] text-[11px] font-medium text-[var(--text-primary)] transition-all flex items-start gap-2 shadow-xs">
-                  <span class="text-sm">🐦</span>
-                  <span>Unsolicited wisdom from Dr. Fledge</span>
+                <button onclick="sendQuickPrompt('Give me unsolicited medical wisdom as Dr. Fledge.')" class="w-full text-left p-2 rounded-lg border border-[var(--border-card)] bg-[var(--btn-inactive-bg)] hover:bg-[var(--btn-inactive-hover)] text-[11px] font-medium text-[var(--text-primary)] transition-all flex items-start gap-1.5 shadow-xs">
+                  <span class="text-xs">🐦</span>
+                  <span class="line-clamp-2">Wisdom from Dr. Fledge</span>
                 </button>
-                <button onclick="sendQuickPrompt('Which other Year 1 KCL lectures cover related concepts, and how do they connect?')" class="w-full text-left p-2.5 rounded-xl border border-[var(--border-card)] bg-[var(--btn-inactive-bg)] hover:bg-[var(--btn-inactive-hover)] text-[11px] font-medium text-[var(--text-primary)] transition-all flex items-start gap-2 shadow-xs">
-                  <span class="text-sm">📚</span>
-                  <span>Connect with other KCL lectures</span>
+                <button onclick="sendQuickPrompt('Which other Year 1 KCL lectures cover related concepts, and how do they connect?')" class="w-full text-left p-2 rounded-lg border border-[var(--border-card)] bg-[var(--btn-inactive-bg)] hover:bg-[var(--btn-inactive-hover)] text-[11px] font-medium text-[var(--text-primary)] transition-all flex items-start gap-1.5 shadow-xs">
+                  <span class="text-xs">📚</span>
+                  <span class="line-clamp-2">Connect other KCL lectures</span>
                 </button>
               </div>
             </div>
@@ -2050,31 +2173,30 @@
           </div>
 
           <!-- Main Chat Panel -->
-          <div class="flex-1 bg-[var(--bg-card)] rounded-2xl border border-[var(--border-card)] shadow-sm flex flex-col overflow-hidden transition-colors">
+          <div class="flex-1 bg-[var(--bg-card)] rounded-xl border border-[var(--border-card)] shadow-xs flex flex-col overflow-hidden transition-colors">
             
             <!-- Messages Stream -->
-            <div id="chat-messages-container" class="flex-1 overflow-y-auto p-5 space-y-4">
+            <div id="chat-messages-container" class="flex-1 overflow-y-auto p-4 space-y-3">
               <!-- Welcome message -->
-              <div class="flex items-start gap-3 max-w-2xl">
-                <img src="pigeon_doctor_clean.png" alt="Dr. Fledge" class="w-8 h-8 rounded-full bg-blue-100 dark:bg-blue-900/40 object-contain p-0.5 shrink-0 shadow-xs border border-blue-200 dark:border-blue-800 mt-0.5" onerror="this.onerror=null;this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🐦</text></svg>';" />
-                <div class="p-4 rounded-2xl rounded-tl-sm bg-[var(--bg-card-subtle)] border border-[var(--border-card)] text-xs text-[var(--text-primary)] leading-relaxed space-y-2">
-                  <p class="font-bold text-sm text-blue-600 dark:text-blue-400">Dr. Fledge · Senior Registrar & AI Tutor</p>
-                  <p>Caw! Welcome, rookie. I have direct access to your loaded slide deck and <strong id="chat-welcome-count">all KCL Year 1 lectures</strong> in your OneDrive repository (FAH, MCB, FPP, PCRS, ACRS, NBSS).</p>
-                  <p>Ask me about any structure, physiological mechanism, or clinical correlate on this slide—or tap on the left for unsolicited wisdom when you're tempted to procrastinate.</p>
+              <div class="flex items-start gap-2.5 max-w-3xl">
+                <img src="pigeon_doctor_clean.png" alt="Dr. Fledge" class="w-7 h-7 rounded-full bg-blue-100 dark:bg-blue-900/40 object-contain p-0.5 shrink-0 shadow-xs border border-blue-200 dark:border-blue-800 mt-0.5" onerror="this.onerror=null;this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🐦</text></svg>';" />
+                <div class="p-3 rounded-2xl rounded-tl-sm bg-[var(--bg-card-subtle)] border border-[var(--border-card)] text-xs text-[var(--text-primary)] leading-relaxed space-y-1 shadow-xs">
+                  <p class="font-bold text-xs text-blue-600 dark:text-blue-400">Dr. Fledge · AI Medical Tutor</p>
+                  <p>Welcome! Ask about any anatomical structure, physiological mechanism, or clinical correlate on this slide or your KCL OneDrive lectures (<span id="chat-welcome-count">all KCL Year 1 lectures</span>).</p>
                 </div>
               </div>
             </div>
 
             <!-- Thinking / Loading Indicator -->
-            <div id="chat-thinking-indicator" class="hidden px-5 py-2 flex items-center gap-2 text-xs text-blue-600 dark:text-blue-400 font-medium">
+            <div id="chat-thinking-indicator" class="hidden px-4 py-1.5 flex items-center gap-2 text-xs text-blue-600 dark:text-blue-400 font-medium">
               <span class="w-2 h-2 rounded-full bg-blue-600 shrink-0"></span>
-              <span>Consulting Gemini 4 Hydrogen & analyzing slide context...</span>
+              <span>Dr. Fledge is reviewing lecture context...</span>
             </div>
 
             <!-- Message Input Area -->
-            <div class="p-4 border-t border-[var(--border-card)] bg-[var(--bg-card)] flex items-end gap-2.5">
-              <textarea id="chat-input-textarea" rows="1" onkeydown="handleChatInputKey(event)" class="flex-1 text-xs px-4 py-2.5 rounded-2xl border border-[var(--border-card)] bg-[var(--bg-card-subtle)] text-[var(--text-primary)] placeholder-[var(--text-dim)] focus:outline-none focus:ring-2 focus:ring-blue-500/20 resize-none max-h-32 transition-all" placeholder="Ask about any mechanism, anatomical relation, or clinical pearl (or ask Dr. Fledge for wisdom)..."></textarea>
-              <button onclick="sendChatMessage()" id="btn-chat-send" class="w-10 h-10 rounded-full bg-blue-600 hover:bg-blue-700 text-white flex items-center justify-center shrink-0 shadow-sm transition-all active:scale-95 disabled:opacity-50">
+            <div class="p-3 border-t border-[var(--border-card)] bg-[var(--bg-card)] flex items-end gap-2">
+              <textarea id="chat-input-textarea" rows="1" onkeydown="handleChatInputKey(event)" class="flex-1 text-xs px-3.5 py-2 rounded-xl border border-[var(--border-card)] bg-[var(--bg-card-subtle)] text-[var(--text-primary)] placeholder-[var(--text-dim)] focus:outline-none focus:ring-2 focus:ring-blue-500/20 resize-none max-h-32 transition-all" placeholder="Ask about any mechanism, anatomical relation, or clinical pearl..."></textarea>
+              <button onclick="sendChatMessage()" id="btn-chat-send" class="w-9 h-9 rounded-xl bg-blue-600 hover:bg-blue-700 text-white flex items-center justify-center shrink-0 shadow-xs transition-all active:scale-95 disabled:opacity-50">
                 <i data-lucide="send" class="w-4 h-4"></i>
               </button>
             </div>
@@ -2258,6 +2380,17 @@
                   <div class="text-[10px] text-[var(--text-dim)]">Monochrome</div>
                 </div>
               </button>
+
+              <button id="btn-accent-christmas" onclick="setAccentPreference('christmas')" data-accent="christmas" class="accent-swatch hidden flex items-center gap-2.5 p-2.5 rounded-xl border border-[var(--border-card)] bg-[var(--bg-card)] hover:bg-[var(--bg-card-subtle)] transition-all cursor-pointer text-left">
+                <span class="w-4 h-4 rounded-full shrink-0 shadow-xs flex items-center justify-center text-[10px]" style="background: linear-gradient(135deg, #DC2626 50%, #166534 50%) !important;">🎄</span>
+                <div>
+                  <div class="font-bold text-xs text-[var(--text-primary)] flex items-center gap-1">
+                    <span>Christmas</span>
+                    <span class="text-[9px] px-1 py-0.2 rounded-full bg-red-100 dark:bg-red-950 text-red-700 dark:text-red-300 font-bold border border-red-200/50">Festive</span>
+                  </div>
+                  <div class="text-[10px] text-[var(--text-dim)]">Winter red & pine</div>
+                </div>
+              </button>
             </div>
           </div>
 
@@ -2276,6 +2409,25 @@
               </div>
             </div>
             <div id="toggle-ambient-glow" class="switch-toggle active shrink-0">
+              <div class="switch-knob"></div>
+            </div>
+          </div>
+
+          <!-- Subtle Festive Snowfall Effect Toggle Option -->
+          <div id="wrapper-festive-snowfall" onclick="toggleFestiveSnowfall()" class="hidden p-3 rounded-xl border border-[var(--border-card)] bg-[var(--bg-card)] hover:bg-[var(--bg-card-subtle)] flex items-center justify-between gap-3 shadow-2xs cursor-pointer transition-all select-none">
+            <div class="flex items-center gap-3">
+              <div class="w-8 h-8 rounded-lg bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200/40 dark:border-emerald-800/40 flex items-center justify-center text-emerald-600 dark:text-emerald-400 shrink-0">
+                <i data-lucide="snowflake" class="w-4 h-4"></i>
+              </div>
+              <div>
+                <div class="font-bold text-xs text-[var(--text-primary)] flex items-center gap-2">
+                  <span>Festive Snowfall Effect</span>
+                  <span id="badge-festive-snowfall" class="text-[10px] px-1.5 py-0.2 rounded-full font-semibold bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">Enabled</span>
+                </div>
+                <div class="text-[11px] text-[var(--text-dim)]">Subtle drifting winter snow particles across the background when Christmas theme is active.</div>
+              </div>
+            </div>
+            <div id="toggle-festive-snowfall" class="switch-toggle active shrink-0">
               <div class="switch-knob"></div>
             </div>
           </div>
@@ -3605,12 +3757,26 @@
   <div id="modal-about" class="fixed inset-0 bg-black/50 backdrop-blur-xs z-50 hidden flex items-center justify-center p-4">
     <div class="bg-[var(--bg-card)] rounded-2xl border border-[var(--border-card)] w-full max-w-sm p-6 shadow-2xl flex flex-col items-center text-center gap-3 relative transition-all">
       <!-- Clickable Synapse Logo with Easter Egg Trigger -->
-      <div id="about-synapse-logo" onclick="handleAboutLogoClick()" class="w-16 h-16 rounded-2xl bg-gradient-to-tr from-blue-700 to-indigo-600 flex items-center justify-center text-white shadow-md ring-2 ring-white/20 mb-1 cursor-pointer transition-transform active:scale-90 hover:scale-105 select-none" title="Tap me a couple times...">
+      <div id="about-synapse-logo" onclick="handleAboutLogoClick()" class="relative w-16 h-16 rounded-2xl bg-gradient-to-tr from-blue-700 to-indigo-600 flex items-center justify-center text-white shadow-md ring-2 ring-white/20 mb-1 cursor-pointer transition-transform active:scale-90 hover:scale-105 select-none" title="Tap me a couple times...">
         <i id="about-logo-icon" data-lucide="sparkles" class="w-8 h-8 transition-transform"></i>
+        <!-- Festive Santa Hat for About Modal Logo (top-left corner, rotated 45deg anticlockwise, bauble hanging left) -->
+        <svg id="about-festive-hat" class="hidden absolute -top-[22px] -left-[24px] w-[52px] h-[52px] select-none pointer-events-none z-20 drop-shadow-md transform -rotate-45" viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <!-- Red Hat Body (flipped) -->
+          <path d="M 31 26 C 28 13 18 5 6 10 C 5 16 8 22 10 26 Z" fill="#DC2626"/>
+          <path d="M 19 9 C 13 12 8 18 10 26 C 12 26 15 26 18 26 C 17 19 19 13 19 9 Z" fill="#991B1B" opacity="0.45"/>
+          <!-- White Fluffy Trim (flipped) -->
+          <rect x="9" y="23" width="24" height="5" rx="2.5" fill="#FFFFFF" filter="drop-shadow(0 1px 1px rgba(0,0,0,0.2))"/>
+          <circle cx="31" cy="25.5" r="2.8" fill="#FFFFFF"/>
+          <circle cx="25" cy="25.5" r="3.2" fill="#FFFFFF"/>
+          <circle cx="19" cy="25.5" r="3.2" fill="#FFFFFF"/>
+          <circle cx="13" cy="25.5" r="2.8" fill="#FFFFFF"/>
+          <!-- White Pom-pom Ball (flipped: hanging to the left) -->
+          <circle cx="6" cy="10" r="3.8" fill="#FFFFFF" filter="drop-shadow(0 1px 2px rgba(0,0,0,0.25))"/>
+        </svg>
       </div>
       <h3 class="text-lg font-bold text-[var(--text-primary)]">Synapse</h3>
       <div class="flex items-center gap-2">
-        <span id="about-version-badge" class="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-blue-50 text-blue-700 dark:bg-blue-950/40 dark:text-blue-300">Version 2.2.1</span>
+        <span id="about-version-badge" class="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-blue-50 text-blue-700 dark:bg-blue-950/40 dark:text-blue-300">Version 2.3.0</span>
         <span class="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-emerald-50 text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300 border border-emerald-200/60 dark:border-emerald-800/40 flex items-center gap-1">
           <i data-lucide="code-2" class="w-3 h-3 text-emerald-600 dark:text-emerald-400"></i> Fully Built with Python 3.12
         </span>
@@ -4000,7 +4166,7 @@
         <div class="p-3 rounded-xl bg-[var(--bg-card-subtle)] border border-[var(--border-card)] flex items-start gap-2.5 text-[11px] text-[var(--text-dim)]">
           <i data-lucide="info" class="w-4 h-4 text-blue-500 shrink-0 mt-0.5"></i>
           <div>
-            <span class="font-semibold text-[var(--text-primary)]">Automatic diagnostics:</span> Includes Synapse version (v2.2.1), macOS platform, and active tab context so the developer can reproduce bugs directly.
+            <span class="font-semibold text-[var(--text-primary)]">Automatic diagnostics:</span> Includes Synapse version (v2.3.0), macOS platform, and active tab context so the developer can reproduce bugs directly.
           </div>
         </div>
 
@@ -4368,18 +4534,22 @@
       const acc = accent || state.accent || 'cobalt';
       const isDark = document.documentElement.classList.contains('dark') || document.body.classList.contains('dark');
       const palette = {
-        cobalt:  isDark ? '#3B82F6' : '#1D4ED8',
-        amber:   isDark ? '#F59E0B' : '#D97706',
-        emerald: isDark ? '#14B8A6' : '#0D9488',
-        crimson: isDark ? '#EF4444' : '#DC2626',
-        violet:  isDark ? '#8B5CF6' : '#7C3AED',
-        slate:   isDark ? '#64748B' : '#475569',
+        cobalt:    isDark ? '#3B82F6' : '#1D4ED8',
+        amber:     isDark ? '#F59E0B' : '#D97706',
+        emerald:   isDark ? '#14B8A6' : '#0D9488',
+        crimson:   isDark ? '#EF4444' : '#DC2626',
+        violet:    isDark ? '#8B5CF6' : '#7C3AED',
+        slate:     isDark ? '#64748B' : '#475569',
+        christmas: isDark ? '#EF4444' : '#C5221F',
       };
       return palette[acc] || (isDark ? '#3B82F6' : '#1D4ED8');
     }
 
     function setAccentPreference(accent) {
-      const acc = accent || 'cobalt';
+      let acc = accent || 'cobalt';
+      if (acc === 'christmas' && !isChristmasSeason()) {
+        acc = 'cobalt';
+      }
       state.accent = acc;
       document.documentElement.dataset.accent = acc;
       document.body.dataset.accent = acc;
@@ -4402,6 +4572,7 @@
 
       renderAmbientGlow(state.ambientGlow);
       renderHomeBgShapes(state.homeBgPattern);
+      updateFestiveMascotAndSnowfall(acc);
     }
 
     // ── Home Background Shapes Pattern Controller ─────────────────────────────
@@ -4574,6 +4745,348 @@
       }
     }
 
+    // ── Seasonal Christmas & Festive Accents Controller ───────────────────────
+    function isDecemberFestiveSeason() {
+      const now = new Date();
+      return (now.getMonth() === 11 && now.getDate() >= 1 && now.getDate() <= 26);
+    }
+
+    function isChristmasSeason() {
+      return isDecemberFestiveSeason();
+    }
+
+    function getPigeonDoctorSrc() {
+      return isChristmasSeason() ? 'pigeon_doctor_festive.png' : 'pigeon_doctor_clean.png';
+    }
+
+    let festiveSnowAnimId = null;
+    let festiveSnowParticles = [];
+
+    function updateFestiveMascotAndSnowfall(accent) {
+      const isSeason = isChristmasSeason();
+      if (state.accent === 'christmas' && !isSeason) {
+        state.accent = 'cobalt';
+        document.documentElement.dataset.accent = 'cobalt';
+        document.body.dataset.accent = 'cobalt';
+        localStorage.setItem('synapse_accent', 'cobalt');
+      }
+
+      const acc = state.accent || 'cobalt';
+      const isFestiveTheme = (acc === 'christmas' && isSeason);
+
+      // Hide Christmas theme button in Theme Editor if outside Dec 1 - Dec 26
+      const christmasSwatch = document.getElementById('btn-accent-christmas');
+      if (christmasSwatch) {
+        christmasSwatch.classList.toggle('hidden', !isSeason);
+      }
+
+      // Hide snowfall toggle in Settings modal when on any other color theme or outside season
+      const snowToggleWrapper = document.getElementById('wrapper-festive-snowfall');
+      if (snowToggleWrapper) {
+        snowToggleWrapper.classList.toggle('hidden', (!isSeason || !isFestiveTheme));
+      }
+
+      // Update all Dr. Pigeon avatar images across the app (Home, AI Tutor, About, Messages)
+      const pigeonSrc = getPigeonDoctorSrc();
+      document.querySelectorAll('img[src*="pigeon_doctor"]').forEach(img => {
+        img.src = pigeonSrc;
+      });
+
+      const badge = document.getElementById('mascot-festive-badge');
+      const synapseHat = document.getElementById('synapse-festive-hat');
+      const aboutHat = document.getElementById('about-festive-hat');
+      const lights = document.getElementById('festive-lights-garland');
+
+      if (badge) badge.classList.toggle('hidden', !isSeason);
+      if (synapseHat) synapseHat.classList.toggle('hidden', !isFestiveTheme);
+      if (aboutHat) aboutHat.classList.toggle('hidden', !isFestiveTheme);
+      if (lights) {
+        lights.classList.toggle('hidden', !isFestiveTheme);
+        if (isFestiveTheme) renderFestiveLights();
+      }
+
+      if (isFestiveTheme && state.festiveSnowfall) {
+        startFestiveSnowfall();
+      } else {
+        stopFestiveSnowfall();
+      }
+    }
+
+    function renderFestiveLights() {
+      const container = document.getElementById('festive-lights-garland');
+      if (!container) return;
+      const width = window.innerWidth || document.documentElement.clientWidth || 1920;
+      const scallopWidth = 72;
+      const count = Math.ceil((width + scallopWidth * 2) / scallopWidth);
+
+      // Rotating festive bulb palettes for vibrant variety
+      const palettes = [
+        ['red', 'gold', 'green'],
+        ['blue', 'red', 'gold'],
+        ['green', 'pink', 'blue'],
+        ['gold', 'green', 'red'],
+        ['pink', 'blue', 'green']
+      ];
+
+      const colors = {
+        red:   '#EF4444',
+        gold:  '#F59E0B',
+        green: '#10B981',
+        blue:  '#38BDF8',
+        pink:  '#EC4899'
+      };
+
+      let html = '';
+      for (let i = 0; i < count; i++) {
+        const pal = palettes[i % palettes.length];
+        html += `
+          <div class="festive-scallop shrink-0 w-[72px] h-[22px] relative pointer-events-none select-none">
+            <svg class="w-full h-full overflow-visible" viewBox="0 0 72 22" fill="none">
+              <!-- Dark Green Twisted Wire Wave -->
+              <path d="M 0 0 Q 36 10.5 72 0" stroke="#14532D" stroke-width="1.4" stroke-linecap="round"/>
+              <path d="M 0 0 Q 36 10.5 72 0" stroke="#166534" stroke-width="0.8" stroke-dasharray="2 3" opacity="0.8"/>
+              
+              <!-- Bulb 1 -->
+              <rect x="13" y="4.8" width="3" height="2.2" rx="0.5" fill="#0F3820"/>
+              <path d="M 14.5 6.8 C 12 8.3 12 12.3 14.5 14.3 C 17 12.3 17 8.3 14.5 6.8 Z" class="festive-bulb-${pal[0]}" fill="${colors[pal[0]]}"/>
+              
+              <!-- Bulb 2 (Center Dip) -->
+              <rect x="34.5" y="9.8" width="3" height="2.2" rx="0.5" fill="#0F3820"/>
+              <path d="M 36 11.8 C 33.5 13.3 33.5 17.3 36 19.3 C 38.5 17.3 38.5 13.3 36 11.8 Z" class="festive-bulb-${pal[1]}" fill="${colors[pal[1]]}"/>
+              
+              <!-- Bulb 3 -->
+              <rect x="56" y="4.8" width="3" height="2.2" rx="0.5" fill="#0F3820"/>
+              <path d="M 57.5 6.8 C 55 8.3 55 12.3 57.5 14.3 C 60 12.3 60 8.3 57.5 6.8 Z" class="festive-bulb-${pal[2]}" fill="${colors[pal[2]]}"/>
+            </svg>
+          </div>
+        `;
+      }
+      container.innerHTML = html;
+    }
+
+    function initFestiveSnowfall() {
+      const savedSnow = localStorage.getItem('synapse_festive_snowfall');
+      state.festiveSnowfall = (savedSnow !== 'false');
+      updateSnowfallToggleUI();
+      updateFestiveMascotAndSnowfall(state.accent);
+    }
+
+    function updateSnowfallToggleUI() {
+      const toggleEl = document.getElementById('toggle-festive-snowfall');
+      const badgeEl = document.getElementById('badge-festive-snowfall');
+      if (toggleEl) {
+        if (state.festiveSnowfall) toggleEl.classList.add('active');
+        else toggleEl.classList.remove('active');
+      }
+      if (badgeEl) {
+        if (state.festiveSnowfall) {
+          badgeEl.innerText = 'Enabled';
+          badgeEl.className = 'text-[10px] px-1.5 py-0.2 rounded-full font-semibold bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300';
+        } else {
+          badgeEl.innerText = 'Disabled';
+          badgeEl.className = 'text-[10px] px-1.5 py-0.2 rounded-full font-semibold bg-neutral-200 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-400';
+        }
+      }
+    }
+
+    function toggleFestiveSnowfall(forceState) {
+      if (typeof forceState === 'boolean') {
+        state.festiveSnowfall = forceState;
+      } else {
+        state.festiveSnowfall = !state.festiveSnowfall;
+      }
+      localStorage.setItem('synapse_festive_snowfall', state.festiveSnowfall ? 'true' : 'false');
+      updateSnowfallToggleUI();
+      updateFestiveMascotAndSnowfall(state.accent);
+    }
+
+    function startFestiveSnowfall() {
+      const canvas = document.getElementById('festive-snow-canvas');
+      if (!canvas) return;
+      canvas.classList.remove('hidden');
+
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+
+      const resizeCanvas = () => {
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+        if (state.accent === 'christmas' || isChristmasSeason()) {
+          renderFestiveLights();
+        }
+      };
+      resizeCanvas();
+      window.removeEventListener('resize', resizeCanvas);
+      window.addEventListener('resize', resizeCanvas);
+
+      if (festiveSnowParticles.length === 0 || festiveSnowParticles.length !== 48) {
+        const count = 48;
+        festiveSnowParticles = [];
+        for (let i = 0; i < count; i++) {
+          festiveSnowParticles.push({
+            x: Math.random() * window.innerWidth,
+            y: Math.random() * window.innerHeight,
+            r: Math.random() * 1.8 + 1.6,
+            speedY: Math.random() * 1.1 + 0.9,
+            speedX: Math.random() * 0.5 - 0.25,
+            opacity: Math.random() * 0.35 + 0.55,
+            swing: Math.random() * Math.PI * 2,
+            swingSpeed: Math.random() * 0.02 + 0.008
+          });
+        }
+      }
+
+      if (festiveSnowAnimId) cancelAnimationFrame(festiveSnowAnimId);
+
+      function renderSnow() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        for (let i = 0; i < festiveSnowParticles.length; i++) {
+          const p = festiveSnowParticles[i];
+          ctx.save();
+          ctx.globalAlpha = p.opacity;
+          ctx.fillStyle = '#FFFFFF';
+          // Soft subtle shadow for clear contrast on both light and dark card backgrounds
+          ctx.shadowColor = 'rgba(0, 0, 0, 0.3)';
+          ctx.shadowBlur = 2.5;
+
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.restore();
+
+          p.y += p.speedY;
+          p.x += Math.sin(p.swing) * 0.5 + p.speedX;
+          p.swing += p.swingSpeed;
+
+          if (p.y > canvas.height + 6) {
+            p.y = -6;
+            p.x = Math.random() * canvas.width;
+          }
+          if (p.x > canvas.width + 6) p.x = -6;
+          else if (p.x < -6) p.x = canvas.width + 6;
+        }
+
+        festiveSnowAnimId = requestAnimationFrame(renderSnow);
+      }
+      festiveSnowAnimId = requestAnimationFrame(renderSnow);
+    }
+
+    function stopFestiveSnowfall() {
+      if (festiveSnowAnimId) {
+        cancelAnimationFrame(festiveSnowAnimId);
+        festiveSnowAnimId = null;
+      }
+      const canvas = document.getElementById('festive-snow-canvas');
+      if (canvas) {
+        canvas.classList.add('hidden');
+        const ctx = canvas.getContext('2d');
+        if (ctx) ctx.clearRect(0, 0, canvas.width, canvas.height);
+      }
+    }
+
+    // ── Global GitHub Announcements System ────────────────────────────────────
+    async function loadAnnouncements() {
+      try {
+        let announcements = [];
+        if (window.pywebview && window.pywebview.api && window.pywebview.api.get_announcements) {
+          announcements = await window.pywebview.api.get_announcements(false);
+        }
+        renderAnnouncements(announcements || []);
+      } catch (err) {
+        console.warn("loadAnnouncements error:", err);
+      }
+    }
+
+    function renderAnnouncements(items) {
+      const container = document.getElementById('home-announcements-container');
+      if (!container) return;
+
+      if (!Array.isArray(items) || items.length === 0) {
+        container.innerHTML = '';
+        return;
+      }
+
+      container.innerHTML = items.map(ann => {
+        const type = (ann.type || 'info').toLowerCase();
+        let bgClass = 'bg-blue-50/90 dark:bg-blue-950/40 border-blue-200 dark:border-blue-900/60 text-blue-950 dark:text-blue-100';
+        let iconName = 'info';
+        let iconColor = 'text-blue-600 dark:text-blue-400';
+        let badgeClass = 'bg-blue-100 text-blue-700 dark:bg-blue-900/60 dark:text-blue-300';
+
+        if (type === 'warning') {
+          bgClass = 'bg-amber-50/90 dark:bg-amber-950/40 border-amber-200 dark:border-amber-900/60 text-amber-950 dark:text-amber-100';
+          iconName = 'alert-triangle';
+          iconColor = 'text-amber-600 dark:text-amber-400';
+          badgeClass = 'bg-amber-100 text-amber-800 dark:bg-amber-900/60 dark:text-amber-300';
+        } else if (type === 'critical' || type === 'error' || type === 'danger') {
+          bgClass = 'bg-red-50/90 dark:bg-red-950/40 border-red-200 dark:border-red-900/60 text-red-950 dark:text-red-100';
+          iconName = 'alert-circle';
+          iconColor = 'text-red-600 dark:text-red-400';
+          badgeClass = 'bg-red-100 text-red-700 dark:bg-red-900/60 dark:text-red-300';
+        } else if (type === 'success' || type === 'update') {
+          bgClass = 'bg-emerald-50/90 dark:bg-emerald-950/40 border-emerald-200 dark:border-emerald-900/60 text-emerald-950 dark:text-emerald-100';
+          iconName = 'sparkles';
+          iconColor = 'text-emerald-600 dark:text-emerald-400';
+          badgeClass = 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/60 dark:text-emerald-300';
+        }
+
+        const safeId = String(ann.id || '').replace(/"/g, '&quot;');
+        const safeTitle = String(ann.title || 'Announcement').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        const safeMsg = String(ann.message || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        const actionBtn = ann.link ? `
+          <a href="${String(ann.link).replace(/"/g, '&quot;')}" target="_blank" class="inline-flex items-center gap-1 text-[11px] font-bold underline hover:opacity-80 transition-opacity mt-1">
+            <span>${String(ann.link_text || 'Learn more').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</span>
+            <i data-lucide="arrow-up-right" class="w-3 h-3"></i>
+          </a>
+        ` : '';
+
+        return `
+          <div id="announcement-${safeId}" class="announcement-banner relative rounded-2xl border p-4 shadow-xs flex items-start gap-3.5 transition-all duration-300 ${bgClass}">
+            <div class="p-1.5 rounded-xl bg-white/70 dark:bg-neutral-900/60 shadow-2xs shrink-0 mt-0.5">
+              <i data-lucide="${iconName}" class="w-4 h-4 ${iconColor}"></i>
+            </div>
+            <div class="min-w-0 flex-1 pr-6">
+              <div class="flex items-center gap-2 flex-wrap mb-0.5">
+                <span class="text-xs font-bold leading-tight">${safeTitle}</span>
+                <span class="text-[9px] font-extrabold uppercase tracking-wide px-1.5 py-0.2 rounded-full ${badgeClass}">${type}</span>
+              </div>
+              <div class="text-xs leading-relaxed opacity-90">${safeMsg}</div>
+              ${actionBtn}
+            </div>
+            <button type="button" onclick="dismissAnnouncement('${safeId}')" class="absolute top-3 right-3 p-1.5 rounded-full hover:bg-black/5 dark:hover:bg-white/10 text-[var(--text-dim)] hover:text-[var(--text-primary)] transition-colors cursor-pointer" title="Dismiss announcement">
+              <i data-lucide="x" class="w-4 h-4"></i>
+            </button>
+          </div>
+        `;
+      }).join('');
+
+      if (window.lucide) lucide.createIcons();
+    }
+
+    async function dismissAnnouncement(id) {
+      if (!id) return;
+      const el = document.getElementById(`announcement-${id}`);
+      if (el) {
+        el.style.opacity = '0';
+        el.style.transform = 'translateY(-6px)';
+        setTimeout(() => {
+          if (el.parentNode) el.parentNode.removeChild(el);
+          const container = document.getElementById('home-announcements-container');
+          if (container && container.children.length === 0) {
+            container.innerHTML = '';
+          }
+        }, 250);
+      }
+      try {
+        if (window.pywebview && window.pywebview.api && window.pywebview.api.dismiss_announcement) {
+          await window.pywebview.api.dismiss_announcement(id);
+        }
+      } catch (err) {
+        console.warn("dismissAnnouncement error:", err);
+      }
+    }
+
     // ── Theme Management (Automatic Light / Dark Mode) ─────────────────────────
     async function setThemePreference(mode) {
       state.theme = mode;
@@ -4681,6 +5194,18 @@
       }
       setHomeBgPattern(savedPattern);
       updateGreeting();
+
+      initFestiveSnowfall();
+      loadAnnouncements();
+
+      window.addEventListener('focus', () => {
+        loadAnnouncements();
+      });
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') {
+          loadAnnouncements();
+        }
+      });
 
       lucide.createIcons();
       setupCanvasEvents();
@@ -4863,6 +5388,7 @@
         loadKclLecturesList();
         loadKclBlocksList();
         loadNotesStyleConfig();
+        loadAnnouncements();
         loadHomeData();
       } catch (err) {
         console.error("Init error:", err);
@@ -5053,6 +5579,7 @@
 
     async function loadHomeData() {
       updateGreeting();
+      loadAnnouncements();
       try {
         if (window.pywebview && window.pywebview.api && window.pywebview.api.get_home_dashboard) {
           const data = await window.pywebview.api.get_home_dashboard();
@@ -5719,7 +6246,7 @@
 
       const sidebarEl = document.getElementById('app-sidebar');
       if (sidebarEl) {
-        if (tabName === 'questions' || tabName === 'home' || tabName === 'notes') {
+        if (tabName === 'questions' || tabName === 'home' || tabName === 'notes' || tabName === 'ai') {
           sidebarEl.classList.add('hidden');
         } else {
           sidebarEl.classList.remove('hidden');
@@ -9256,6 +9783,20 @@
       mode: "quick", // "quick" | "complex"
     };
 
+    function toggleChatContextSidebar() {
+      const sidebar = document.getElementById('chat-context-sidebar');
+      if (sidebar) {
+        sidebar.classList.toggle('hidden');
+        const btn = document.getElementById('btn-toggle-chat-context');
+        if (btn) {
+          btn.classList.toggle('bg-blue-100', !sidebar.classList.contains('hidden'));
+          btn.classList.toggle('text-blue-700', !sidebar.classList.contains('hidden'));
+          btn.classList.toggle('dark:bg-blue-900/50', !sidebar.classList.contains('hidden'));
+          btn.classList.toggle('dark:text-blue-300', !sidebar.classList.contains('hidden'));
+        }
+      }
+    }
+
     function setChatMode(mode) {
       chatState.mode = mode || 'quick';
       const btnQuick = document.getElementById('btn-chat-mode-quick');
@@ -9266,39 +9807,39 @@
 
       if (mode === 'complex') {
         if (btnComplex) {
-          btnComplex.className = 'px-2.5 py-1 rounded-full text-xs font-semibold transition-all bg-white dark:bg-neutral-700 text-purple-600 dark:text-purple-400 shadow-xs flex items-center gap-1';
+          btnComplex.className = 'px-2 py-0.5 rounded-full text-[11px] font-semibold transition-all bg-white dark:bg-neutral-700 text-purple-600 dark:text-purple-400 shadow-xs flex items-center gap-1';
         }
         if (btnQuick) {
-          btnQuick.className = 'px-2.5 py-1 rounded-full text-xs font-semibold transition-all text-[var(--text-dim)] hover:text-[var(--text-primary)] flex items-center gap-1';
+          btnQuick.className = 'px-2 py-0.5 rounded-full text-[11px] font-semibold transition-all text-[var(--text-dim)] hover:text-[var(--text-primary)] flex items-center gap-1';
         }
         if (modelBadge) {
           modelBadge.className = 'px-2 py-0.5 rounded-full text-[10px] font-mono font-semibold bg-purple-50 text-purple-700 dark:bg-purple-950/40 dark:text-purple-300 border border-purple-200/50 dark:border-purple-800/40';
-          modelBadge.innerHTML = '🧠 gemini-4-hydrogen <span class="font-normal opacity-75">(Complex)</span>';
+          modelBadge.innerHTML = '🧠 Complex';
         }
         if (modePill) {
           modePill.className = 'text-[10px] font-semibold px-2 py-0.5 rounded-full bg-purple-50 text-purple-700 dark:bg-purple-950/40 dark:text-purple-300 border border-purple-200/50';
           modePill.innerHTML = '🧠 Complex';
         }
         if (modeExpl) {
-          modeExpl.innerHTML = '🧠 <b>Complex Mode:</b> Uses <code>gemini-4-hydrogen</code> (deep multi-step medical reasoning) with automatic fallback to <code>gemini-3.8-flash</code>.';
+          modeExpl.innerHTML = '🧠 <b>Complex Mode:</b> Uses <code>gemini-4-hydrogen</code> (20 req/day).';
         }
       } else {
         if (btnQuick) {
-          btnQuick.className = 'px-2.5 py-1 rounded-full text-xs font-semibold transition-all bg-white dark:bg-neutral-700 text-blue-600 dark:text-blue-400 shadow-xs flex items-center gap-1';
+          btnQuick.className = 'px-2 py-0.5 rounded-full text-[11px] font-semibold transition-all bg-white dark:bg-neutral-700 text-blue-600 dark:text-blue-400 shadow-xs flex items-center gap-1';
         }
         if (btnComplex) {
-          btnComplex.className = 'px-2.5 py-1 rounded-full text-xs font-semibold transition-all text-[var(--text-dim)] hover:text-[var(--text-primary)] flex items-center gap-1';
+          btnComplex.className = 'px-2 py-0.5 rounded-full text-[11px] font-semibold transition-all text-[var(--text-dim)] hover:text-[var(--text-primary)] flex items-center gap-1';
         }
         if (modelBadge) {
           modelBadge.className = 'px-2 py-0.5 rounded-full text-[10px] font-mono font-semibold bg-blue-50 text-blue-700 dark:bg-blue-950/40 dark:text-blue-300 border border-blue-200/50 dark:border-blue-800/40';
-          modelBadge.innerHTML = '⚡ gemini-3.5-flash-lite <span class="font-normal opacity-75">(Quick)</span>';
+          modelBadge.innerHTML = '⚡ Quick';
         }
         if (modePill) {
           modePill.className = 'text-[10px] font-semibold px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 dark:bg-blue-950/40 dark:text-blue-300 border border-blue-200/50';
           modePill.innerHTML = '⚡ Quick';
         }
         if (modeExpl) {
-          modeExpl.innerHTML = '⚡ <b>Quick Mode:</b> Uses <code>gemini-3.5-flash-lite</code> with automatic fallback to <code>gemini-3-flash-preview</code>. High quota (1,500 req/day).';
+          modeExpl.innerHTML = '⚡ <b>Quick Mode:</b> Uses <code>gemini-3.5-flash-lite</code> (1,500 req/day).';
         }
       }
       if (window.lucide) lucide.createIcons();
@@ -9647,7 +10188,7 @@
 
       if (isUser) {
         msgEl.innerHTML = `
-          <div class="p-3.5 rounded-2xl rounded-tr-sm bg-blue-600 text-white text-xs leading-relaxed max-w-xl shadow-xs">
+          <div class="p-3 rounded-2xl rounded-tr-sm bg-blue-600 text-white text-xs leading-relaxed max-w-2xl shadow-xs">
             <p class="whitespace-pre-wrap">${content.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</p>
           </div>
           <div class="w-8 h-8 rounded-full bg-blue-100 dark:bg-blue-950/60 text-blue-600 dark:text-blue-400 flex items-center justify-center shrink-0 border border-blue-200 dark:border-blue-900 shadow-xs mt-0.5">
@@ -9665,9 +10206,10 @@
           </div>
         ` : '';
 
+        const pigeonSrc = (typeof getPigeonDoctorSrc === 'function') ? getPigeonDoctorSrc() : 'pigeon_doctor_clean.png';
         msgEl.innerHTML = `
-          <img src="pigeon_doctor_clean.png" alt="Dr. Fledge" class="w-8 h-8 rounded-full bg-blue-100 dark:bg-blue-900/40 object-contain p-0.5 shrink-0 shadow-xs border border-blue-200 dark:border-blue-800 mt-0.5" onerror="this.onerror=null;this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🐦</text></svg>';" />
-          <div class="p-4 rounded-2xl rounded-tl-sm bg-[var(--bg-card-subtle)] border border-[var(--border-card)] text-xs text-[var(--text-primary)] leading-relaxed max-w-3xl space-y-2 shadow-xs w-full">
+          <img src="${pigeonSrc}" alt="Dr. Fledge" class="w-8 h-8 rounded-full bg-blue-100 dark:bg-blue-900/40 object-contain p-0.5 shrink-0 shadow-xs border border-blue-200 dark:border-blue-800 mt-0.5" onerror="this.onerror=null;this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🐦</text></svg>';" />
+          <div class="p-3.5 rounded-2xl rounded-tl-sm bg-[var(--bg-card-subtle)] border border-[var(--border-card)] text-xs text-[var(--text-primary)] leading-relaxed max-w-4xl space-y-2 shadow-xs w-full">
             <div>${formatMarkdownToHtml(content)}</div>
             ${continuationBtn}
           </div>
@@ -11120,6 +11662,9 @@
     // ── About Modal ───────────────────────────────────────────────────────────
     function openAboutModal() {
       document.getElementById('modal-about').classList.remove('hidden');
+      const isFestive = (state.accent === 'christmas' && isChristmasSeason());
+      const aboutHat = document.getElementById('about-festive-hat');
+      if (aboutHat) aboutHat.classList.toggle('hidden', !isFestive);
       lucide.createIcons();
     }
     function closeAboutModal() {
@@ -11137,7 +11682,7 @@
       latestAppUpdateInfo = info;
       const verBadge = document.getElementById('about-version-badge');
       if (verBadge) {
-        verBadge.innerText = `Version ${info.current_version || '2.2.1'} (v${info.latest_version} available)`;
+        verBadge.innerText = `Version ${info.current_version || '2.3.0'} (v${info.latest_version} available)`;
         verBadge.classList.remove('bg-blue-50', 'text-blue-700');
         verBadge.classList.add('bg-emerald-50', 'text-emerald-700', 'dark:bg-emerald-950/40', 'dark:text-emerald-300');
       }
@@ -11178,7 +11723,7 @@
             handleAppUpdateNotification(res);
             if (manual) showToast(`Update found: Synapse v${res.latest_version}`, "success");
           } else if (res && res.checked) {
-            if (manual) showToast(`Synapse is up to date! (v${res.current_version || '2.2.1'})`, "success");
+            if (manual) showToast(`Synapse is up to date! (v${res.current_version || '2.3.0'})`, "success");
           } else if (manual) {
             const errMsg = (res && res.error && String(res.error).trim()) ? String(res.error).trim() : 'Connection timed out or network error';
             showToast(`Could not check for updates: ${errMsg}`, "error");

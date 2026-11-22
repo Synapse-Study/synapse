@@ -1,0 +1,10 @@
+[
+  {
+    "id": "2026-11-update-notice",
+    "title": "New Update Coming Soon",
+    "message": "This is a test.",
+    "type": "info",
+    "active": true,
+    "expires_at": "2026-12-05"
+  }
+]

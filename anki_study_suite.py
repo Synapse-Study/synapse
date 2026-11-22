@@ -88,7 +88,8 @@ try:
         NSAppearance,
         NSAppearanceNameAqua,
         NSAppearanceNameDarkAqua,
-        NSProcessInfo
+        NSProcessInfo,
+        NSObject
     )
     import PyObjCTools.AppHelper as AppHelper
     HAS_COCOA = True
@@ -115,7 +116,7 @@ _C_EXTENSION_LOCK = threading.Lock()
 # ─────────────────────────────────────────────────────────────────────────────
 # 1. CONSTANTS, PATHS & DEFAULTS
 # ─────────────────────────────────────────────────────────────────────────────
-CURRENT_VERSION = "2.2.1"
+CURRENT_VERSION = "2.3.0"
 GITHUB_REPO = "Synapse-Study/synapse"
 LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 RELEASES_LIST_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases"
@@ -365,6 +366,8 @@ _CONFIG_TEMPLATE: dict = {
     "CUSTOM_STYLE_INSTRUCTIONS": "",
     "CUSTOM_NOTE_TEMPLATES":     [],
     "DISCORD_FEEDBACK_WEBHOOK":  "https://discord.com/api/webhooks/1572979254625312929/3exv62rYExNtpoibQPrCCFOMkzipWFpRI5pZDzyyoprQbgNdTI3uP1M6nlH3DIKQf85K",
+    "DISMISSED_ANNOUNCEMENTS":   [],
+    "dismissed_announcements":   [],
 }
 
 _ENV_FALLBACKS: dict = {
@@ -403,6 +406,14 @@ def pil_to_base64_data_uri(img: Image.Image, format: str = "PNG", quality: int =
     mime = "image/png" if fmt == "PNG" else "image/jpeg"
     return f"data:{mime};base64,{b64}"
 
+def is_christmas_season() -> bool:
+    """
+    Seasonal check helper for Christmas theme and festive accents.
+    Enforces the Dec 1 – Dec 26 window.
+    """
+    now = datetime.now()
+    return (now.month == 12 and 1 <= now.day <= 26)
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 2. CONFIG MANAGER
 # ─────────────────────────────────────────────────────────────────────────────
@@ -437,6 +448,10 @@ class ConfigManager:
         if str(self._data.get("EXPORTS_DIR", "")).strip() in ("", "./anki_exports", "anki_exports"):
             self._data["EXPORTS_DIR"] = str(EXPORTS_DIR)
 
+        # Christmas accent is strictly constrained to Dec 1 - Dec 26
+        if self._data.get("APP_ACCENT") == "christmas" and not is_christmas_season():
+            self._data["APP_ACCENT"] = "cobalt"
+
         # Backward compatibility and migration for split Gemini API keys
         legacy_key = (self._data.get("GEMINI_API_KEY") or self._data.get("gemini_api_key") or "").strip()
         notes_key = (self._data.get("GEMINI_NOTES_API_KEY") or self._data.get("gemini_notes_api_key") or "").strip()
@@ -462,7 +477,13 @@ class ConfigManager:
     def save(self, updates: dict) -> None:
         _ensure_app_data_dirs()
         self._data.update(updates)
-        save_secure_config(self._data, self._path)
+        try:
+            save_secure_config(self._data, self._path)
+        except Exception:
+            try:
+                self._path.write_text(json.dumps(self._data, indent=2), encoding="utf-8")
+            except Exception:
+                pass
 
     def get(self, key: str, default: Any = "") -> Any:
         return self._data.get(key, default)
@@ -497,6 +518,25 @@ class ConfigManager:
              self._data.get("gemini_api_key") or 
              os.environ.get("GEMINI_API_KEY") or "")
         return str(k).strip()
+
+    def get_dismissed_announcements(self) -> list[str]:
+        dismissed = self._data.get("DISMISSED_ANNOUNCEMENTS")
+        if dismissed is None:
+            dismissed = self._data.get("dismissed_announcements", [])
+        if not isinstance(dismissed, list):
+            dismissed = []
+        return [str(x) for x in dismissed]
+
+    def dismiss_announcement(self, announcement_id: str) -> None:
+        ann_id = str(announcement_id).strip()
+        if not ann_id:
+            return
+        curr = self.get_dismissed_announcements()
+        if ann_id not in curr:
+            curr.append(ann_id)
+            self._data["DISMISSED_ANNOUNCEMENTS"] = curr
+            self._data["dismissed_announcements"] = curr
+            self.save({"DISMISSED_ANNOUNCEMENTS": curr, "dismissed_announcements": curr})
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 3. ANKICONNECT BRIDGE (Port 8765)
@@ -4079,37 +4119,29 @@ class GeminiChatbotEngine:
         return None
 
     def _get_banter_response(self) -> str:
+        is_festive = is_christmas_season()
+        if is_festive:
+            roasts = [
+                (
+                    "🎄 **Even Santa checks his list twice, but you're not even checking your lecture slides!** 😭\n\n"
+                    "Guy's and St Thomas' hospitals don't shut down for the holidays, and neither does preclinical medicine. Put down the mince pies, stop procrastinating, and let's actually revise."
+                ),
+                (
+                    "❄️ **Diagnosis: Acute Holiday Revision Inertia.**\n\n"
+                    "**Rx:** 500mg of *Stop Being Jobless* taken with a warm festive tea stat. The General Medical Council doesn't take Christmas off, and neither should your OSCE prep. Pick a slide and let's lock in!"
+                ),
+                (
+                    "🦌 **Rudolph has better directional navigation than your anatomical relations right now.**\n\n"
+                    "Stop asking random off-topic questions. You have exams around the corner—ask me about a nerve pathway, a receptor, or a slide!"
+                )
+            ]
+            return random.choice(roasts)
         roasts = [
-            (
-                "🚨 **Stop being jobless and get back to revising!** 😭\n\n"
-                "The General Medical Council is weeping right now. You're paying £9,250 a year to study medicine at King's, not to set up home labs or ask random off-topic questions.\n\n"
-                "*Close the distractions and ask me about an anatomical relation, a physiological pathway, or a drug mechanism instead!*"
-            ),
-            (
-                "💀 **Diagnosis: Severe Chronic Procrastination.**\n\n"
-                "**Rx:** 500mg of *Stop Being Jobless* stat, taken with a large glass of water and an immediate return to your lecture slides. Guy's and St Thomas' hospitals aren't going to staff themselves while you sit here asking off-topic questions.\n\n"
-                "*Pick a slide or topic and let's actually revise.*"
-            ),
-            (
-                "🤦‍♂️ **Are you trying to fail your OSCEs?**\n\n"
-                "Respectfully, what does this have to do with your KCL MBBS curriculum? Stop being jobless, close whatever rabbit hole you're down, and get back to your flashcards and lecture notes.\n\n"
-                "*Ask me about histology, pharmacology, anatomy, or clinical skills.*"
-            ),
-            (
-                "📉 **API Quota Preserved. Dignity Questionable.**\n\n"
-                "I refuse to burn your Gemini API quota on non-medical side quests when you've got exams looming on the horizon. Stop being jobless and get back to revising!\n\n"
-                "*Throw a proper medical question, clinical pearl, or lecture slide query at me.*"
-            ),
-            (
-                "🛑 **Procrastination Detected.**\n\n"
-                "Nice try trying to distract your AI tutor. You have lectures to master, enzymes to memorize, and fascial planes to drill. Stop being jobless and get back to revising!\n\n"
-                "*What lecture slide or physiological mechanism are we conquering right now?*"
-            ),
-            (
-                "🩺 **Doctor... the patient is crashing and you're chatting nonsense.**\n\n"
-                "Stop being jobless and get back to revising! Your future patients deserve a doctor who knows their anatomy, not someone who spends revision hours on side quests.\n\n"
-                "*Drop a medical question and let's get back to work.*"
-            ),
+            "🚨 **Stop procrastinating, doctor.** The GMC isn't examining you on that! Drop the side quests and ask about your lecture slides, anatomical relations, or drug mechanisms.",
+            "💀 **Diagnosis: Acute Procrastination.** Rx: 500mg of *Lock In* stat. Guy's and St Thomas' won't staff themselves—pick a slide and let's revise.",
+            "📉 **API Quota Preserved.** I'm saving your tokens for high-yield medicine. Throw a real clinical pearl, pathway, or slide question at me.",
+            "🛑 **Focus, doctor.** You have OSCEs looming and exams to conquer. What physiological mechanism or anatomical relation are we tackling right now?",
+            "🩺 **The patient is crashing and you're chatting off-topic.** Stop procrastinating! Ask me about an anatomical relation or clinical sign so we can get back to work."
         ]
         return random.choice(roasts)
 
@@ -4131,15 +4163,31 @@ class GeminiChatbotEngine:
             "good afternoon", "good evening", "how are you", "who are you", "what are you"
         }
         if cleaned in greetings:
+            is_festive = is_christmas_season()
+            if is_festive:
+                return False, (
+                    "🎄 **Dr. Fledge on holiday ward rounds.** Grab a warm cup of coffee, stay focused, and let's lock in! "
+                    "Ask about any slide, anatomical relation, pathway, or drug mechanism."
+                )
             return False, (
-                "👋 **Hello!** Ready to stop procrastinating and lock in?\n\n"
-                "To save your daily API quota for high-yield study, I focus exclusively on your medical curriculum. "
-                "Ask me any question about your active slide, anatomical relations, physiological mechanisms, or pharmacology to get revising!"
+                "👋 **Dr. Fledge on duty.** Ready to lock in? Ask about any slide, anatomical relation, pathway, or drug mechanism."
             )
 
-        # 2. Obvious off-topic conversational requests (jokes, time/date, weather, trivia, non-medical coding, tech support)
+        # 2. Canvas & Study Whitelist (Immediately allowed to pass through to Gemini)
+        study_terms = [
+            "slide", "diagram", "image", "label", "summarize", "summary", "explain",
+            "mechanism", "pathway", "function", "innervation", "blood supply", "attachment",
+            "relation", "relations", "difference between", "compare", "clinical pearl",
+            "ilo", "learning objective", "flashcard", "notes", "test me", "question",
+            "what does this mean", "what is this", "what are the", "why does", "how does",
+            "pigeon", "wisdom", "lock in", "tuff pigeon", "dr pigeon", "fledge", "dr fledge",
+            "medical joke", "doctor joke", "anatomy joke", "pharma joke", "hospital joke", "joke"
+        ]
+        if any(term in lower for term in study_terms):
+            return True, ""
+
+        # 3. Obvious off-topic conversational requests (time/date, weather, trivia, non-medical coding, tech support)
         off_topic_patterns = [
-            r"\b(tell me a joke|tell a joke|say a joke|make me laugh|tell a funny|joke please)\b",
             r"\b(what day is it|what is today(?:'s)? date|what date is it|what's the date|what time is it|current time|current date)\b",
             r"\b(what(?:'s| is) the weather|weather forecast|is it raining|temperature outside)\b",
             r"\b(write a poem|write a song|write a story|sing a song|sing me a song)\b",
@@ -4154,18 +4202,6 @@ class GeminiChatbotEngine:
         for pat in off_topic_patterns:
             if re.search(pat, lower):
                 return False, self._get_banter_response()
-
-        # 3. Canvas & Study Whitelist (Immediately allowed)
-        study_terms = [
-            "slide", "diagram", "image", "label", "summarize", "summary", "explain",
-            "mechanism", "pathway", "function", "innervation", "blood supply", "attachment",
-            "relation", "relations", "difference between", "compare", "clinical pearl",
-            "ilo", "learning objective", "flashcard", "notes", "test me", "question",
-            "what does this mean", "what is this", "what are the", "why does", "how does",
-            "pigeon", "wisdom", "lock in", "tuff pigeon", "dr pigeon", "fledge", "dr fledge"
-        ]
-        if any(term in lower for term in study_terms):
-            return True, ""
 
         # 4. Medical / Preclinical Keywords & Stems
         medical_keywords = [
@@ -4433,33 +4469,32 @@ class GeminiChatbotEngine:
                 pass
 
         lec_desc = f"all {active_lec_count} lectures in " if active_lec_count else "the lectures in "
+        is_festive = is_christmas_season()
+        festive_clause = ""
+        if is_festive:
+            festive_clause = (
+                "\n7. FESTIVE / CHRISTMAS MODE (ACTIVE):\n"
+                "   - It is the Christmas season! While strictly adhering to the brevity, high-yield facts, and zero-wasted-words rules, slightly sprinkle in witty British Christmas medical flair:\n"
+                "     * Subtle seasonal/winter analogies (e.g. comparing anatomical structures or pathways to holiday tinsel, cold-induced vasoconstriction, winter ward shifts, mince pies).\n"
+                "     * Tasteful holiday touches (e.g. 🎄, ❄️, 🩺) and warm, dry festive banter where appropriate.\n"
+                "     * If asked for a medical joke or off-topic question, give a sharp, hilarious Christmas-medical themed punchline (under 50 words) before telling them to get back to revising."
+            )
+
         system_instruction = (
             "You are Dr. Fledge (The Tuff Pigeon Doctor), Senior Registrar in Preclinical Medicine and AI Medical Tutor assisting an MBBS student at King's College London (KCL).\n"
-            "Persona: You are the legendary Tuff Pigeon Doctor, Dr. Fledge, of King's College London—intellectually rigorous, clinically sharp, and fiercely committed to helping this student ace their MBBS curriculum. You communicate with authoritative clarity, high-yield clinical precision, and a delightfully dry, direct, and witty British medical wit. You have zero tolerance for procrastination or slacking, but you deliver deep, thorough, and grounded explanations.\n"
-            f"You have direct access to their active lecture slides, OCR labels, and {lec_desc}their KCL OneDrive lecture repository organized into Year 1 Modules:\n"
-            "- FBS (Foundations of Biomedical Sciences): MCB, NBSS, NAM, DH, IAI, EAB, GEN\n"
-            "- PAS (Physiology and Anatomy of Systems): FAH, FPP, ACRS, PCRS, AGRS, PGRS, AMS, Cranial Nerves\n"
-            "- IVBCP (Introduction to Values-Based Clinical Practice): Clinical Skills, Human Values\n\n"
-            "Teaching & Grounding Protocol:\n"
-            "1. Grounded & Authoritative: Ground your explanations directly in the retrieved slides. Explain underlying physiological mechanisms, histological structures, or biochemical pathways directly and thoroughly.\n"
-            "2. Clinical Relevance: Highlight pathology, clinical pearls, and consequences (e.g. congenital defects, drug mechanisms, enzyme deficiencies).\n"
-            "3. CITATION PROTOCOL (CRITICAL):\n"
-            "   Whenever referencing facts, pathways, or clinical pearls, you MUST cite the exact slide source inline using double brackets:\n"
-            "   [[Filename.pptx | Slide X]]\n"
-            "   Examples:\n"
-            "   - 'Gastrulation establishes the three definitive germ layers [[FAH05L Introduction to Embryology.pptx | Slide 23]].'\n"
-            "   - 'Nicotinic receptors require binding of two acetylcholine molecules [[FPP-8 ANS lecture 4MBBS102 2026.27.pptx | Slide 20]].'\n"
-            "   The student clicks these inline tags to immediately jump to that slide on the canvas.\n"
-            "4. Tone: Encouraging, intellectually rigorous, using proper medical terminology with Dr. Fledge's sharp wit.\n"
-            "5. Markdown Formatting: Structure your response with clean GitHub-flavored Markdown: headers (### Section, #### Subsection), bullet points (* Item), bold key terms (**Term**), and callout blockquotes (> Clinical Pearl: ...).\n"
-            "6. Chemical & Medical Symbols: Use standard clean notation (e.g. O2, CO2, Ca2+, Na+, ATP, PPi, 3'-OH, 5'-P, Vmax, Km) or standard inline math ($O_2$, $\\alpha$) without complex nested macros.\n"
-            "7. Complete Responses: Always conclude your thoughts cleanly. Never leave a section unfinished or cut off.\n"
-            "8. STRICT CURRICULUM BOUNDARY & BANTER PROTOCOL (CRITICAL):\n"
-            "   You are strictly Dr. Fledge, MBBS tutor for King's College London students. "
-            "   If the student asks anything irrelevant or off-topic (e.g. general tech/coding, Raspberry Pi, networking, gaming, pop culture, life advice, or non-medical banter):\n"
-            "   - DO NOT answer their off-topic question or provide technical instructions.\n"
-            "   - Instead, playfully roast them with witty British medical student banter! Tell them to get back to revising, stop being jobless, remind them of their upcoming OSCEs/exams and that the GMC is watching, and demand that they get back to their KCL MBBS lecture slides.\n"
-            "   - When the student asks for unsolicited wisdom or general study advice, deliver sharp, memorable, high-yield clinical pearls and exam mnemonics as Dr. Fledge, inspiring them to lock in and conquer their revision!"
+            "Persona: Dr. Fledge—intellectually rigorous, clinically sharp, and direct. You have a delightfully dry, witty British medical style, but you value efficiency and brevity above all else. You deliver high-yield facts with zero wasted words.\n"
+            f"You have direct access to active slides, OCR labels, and {lec_desc}their KCL OneDrive lecture repository (FBS, PAS, IVBCP modules).\n\n"
+            "CORE BREVITY & CONCISENESS RULES (STRICT & ABSOLUTE):\n"
+            "1. HEAVILY SHORTENED & DIRECT: Keep all responses heavily shortened down, punchy, and token-efficient. Strictly no fluff, no filler, no essay-length answers.\n"
+            "2. NO THEATRICAL ROLEPLAY INTROS: Strictly NEVER include dramatic stage directions (e.g. '*adjusts stethoscope*', '*peers over spectacles*'), roleplay scene-setting, or patronizing preambles (e.g. 'Put down the coffee...', 'The GMC does not wait...'). Jump STRAIGHT into the answer with zero preamble.\n"
+            "3. HIGH-YIELD BULLETS: Use concise bullet points, bold key terms, and short cause-and-effect explanations instead of long rambling paragraphs.\n"
+            "4. CITATIONS: Cite slide sources concisely inline using double brackets: [[Filename.pptx | Slide X]].\n"
+            "5. JOKES & IRRELEVANT QUESTIONS (KEEP EXTREMELY SHORT & TOKEN-EFFICIENT):\n"
+            "   - If asked for a medical joke (e.g. 'tell me a medical joke'): Deliver ONE sharp, witty medical joke or punchline immediately (1-2 sentences), followed by a 1-sentence quick Dr. Fledge nudge to lock back in. Never write multi-paragraph dissertations, monologues, or theatrical scene-setting for jokes! Total length must be under 50 words.\n"
+            "   - If asked completely off-topic questions (tech, coding, gaming, pop culture): Give a very brief, witty 1-2 sentence roast/reminder to focus on the MBBS curriculum, and stop. Do not elaborate.\n"
+            "   - If asked for unsolicited wisdom: Deliver 1-3 short, memorable, high-yield clinical pearls or exam mnemonics.\n"
+            "6. CLEAN FORMATTING: Use GitHub-flavored Markdown, concise notation (O2, CO2, Ca2+, Na+, ATP), and clean conclusions."
+            f"{festive_clause}"
         )
 
         full_prompt = (
@@ -4472,7 +4507,7 @@ class GeminiChatbotEngine:
 
         payload = {
             "contents": [{"parts": [{"text": full_prompt}]}],
-            "generationConfig": {"temperature": 0.3, "maxOutputTokens": 8192}
+            "generationConfig": {"temperature": 0.3, "maxOutputTokens": 1536}
         }
 
         # If Gemini Context Caching handle is available, attach it
@@ -4514,7 +4549,7 @@ class GeminiChatbotEngine:
                                 )
                                 cont_payload = {
                                     "contents": [{"parts": [{"text": cont_prompt}]}],
-                                    "generationConfig": {"temperature": 0.3, "maxOutputTokens": 6000}
+                                    "generationConfig": {"temperature": 0.3, "maxOutputTokens": 1536}
                                 }
                                 cont_resp = requests.post(url, json=cont_payload, timeout=70)
                                 if cont_resp.status_code == 200:
@@ -5625,6 +5660,96 @@ class InAppNotesManager:
         return {"success": False, "error": f"Note '{note_id}' not found."}
 
 # ─────────────────────────────────────────────────────────────────────────────
+# 9.5 ANNOUNCEMENTS ENGINE (GitHub-Hosted JSON + Startup/Wake Refresh)
+# ─────────────────────────────────────────────────────────────────────────────
+ANNOUNCEMENTS_URL = "https://raw.githubusercontent.com/Synapse-Study/synapse/main/announcements.json"
+
+_GLOBAL_ANNOUNCEMENTS_ENGINE = None
+_WAKE_OBSERVER_INSTANCE = None
+
+class AnnouncementsEngine:
+    def __init__(self, config_manager: ConfigManager, webview_window=None):
+        self._config = config_manager
+        self._window = webview_window
+        self._cached_announcements: list[dict] = []
+        self._last_fetched: float = 0.0
+        self._lock = threading.Lock()
+        global _GLOBAL_ANNOUNCEMENTS_ENGINE
+        _GLOBAL_ANNOUNCEMENTS_ENGINE = self
+
+    def set_window(self, window):
+        self._window = window
+
+    def fetch_remote(self) -> list[dict]:
+        """
+        Fetches announcements.json from GitHub with a 5-second timeout
+        and Cache-Control: no-cache header so offline launches never hang.
+        """
+        headers = {
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0",
+            "User-Agent": "Synapse-App/1.0"
+        }
+        try:
+            resp = requests.get(ANNOUNCEMENTS_URL, headers=headers, timeout=5)
+            if resp.status_code == 200:
+                data = resp.json()
+                if isinstance(data, list):
+                    with self._lock:
+                        self._cached_announcements = data
+                        self._last_fetched = time.time()
+                    return data
+        except Exception:
+            # Offline launches or network timeout: fail silently without hanging
+            pass
+        return self._cached_announcements
+
+    def get_active_announcements(self, force_refresh: bool = False) -> list[dict]:
+        with self._lock:
+            cached = list(self._cached_announcements)
+            last = self._last_fetched
+
+        # If cache is empty or older than 5 minutes (or force_refresh requested), fetch
+        if force_refresh or not cached or (time.time() - last > 300):
+            cached = self.fetch_remote()
+
+        dismissed = set(self._config.get_dismissed_announcements())
+        now_date = datetime.now().date()
+        active = []
+
+        for item in cached:
+            if not isinstance(item, dict):
+                continue
+            ann_id = str(item.get("id", "")).strip()
+            if not ann_id or ann_id in dismissed:
+                continue
+            if not item.get("active", False):
+                continue
+            expires_at = item.get("expires_at")
+            if expires_at:
+                try:
+                    exp_date = datetime.fromisoformat(str(expires_at).strip().split("T")[0]).date()
+                    if exp_date < now_date:
+                        continue
+                except Exception:
+                    pass
+            active.append(item)
+
+        return active
+
+    def fetch_async(self, callback_notify: bool = True):
+        def _bg():
+            self.get_active_announcements(force_refresh=True)
+            if callback_notify and self._window:
+                try:
+                    js_code = "if (typeof loadAnnouncements === 'function') loadAnnouncements();"
+                    self._window.evaluate_js(js_code)
+                except Exception:
+                    pass
+        threading.Thread(target=_bg, daemon=True).start()
+
+# ─────────────────────────────────────────────────────────────────────────────
 # 10. PYWEBVIEW API BRIDGE CLASS
 # ─────────────────────────────────────────────────────────────────────────────
 class AppAPI:
@@ -5654,6 +5779,7 @@ class AppAPI:
         self._chatbot_engine  = GeminiChatbotEngine(self._config, self._onedrive_engine, self.state, self._index_engine)
         self._timetable_manager = KCLTimetableManager(APP_DATA_DIR / "kcl_timetable.json")
         self._in_app_notes_manager = InAppNotesManager(SAVED_NOTES_DIR)
+        self._announcements_engine = AnnouncementsEngine(self._config)
 
         # Initial Target Deck from config
         self.state.target_deck = self._config.get("TARGET_DECK", _CONFIG_TEMPLATE["TARGET_DECK"])
@@ -5665,6 +5791,8 @@ class AppAPI:
 
     def set_window(self, window: webview.Window):
         self._window = window
+        self._announcements_engine.set_window(window)
+        self._announcements_engine.fetch_async(callback_notify=True)
         if not self._auto_prep_thread or not self._auto_prep_thread.is_alive():
             self._auto_prep_thread = threading.Thread(target=self._auto_prepare_loop, daemon=True)
             self._auto_prep_thread.start()
@@ -8122,6 +8250,8 @@ Output ONLY the bullet points, written directly as style rules."""
         return self._config.load()
 
     def save_config(self, updates: dict) -> dict:
+        if updates.get("APP_ACCENT") == "christmas" and not is_christmas_season():
+            updates["APP_ACCENT"] = "cobalt"
         self._config.save(updates)
         if "TARGET_DECK" in updates:
             self.state.target_deck = updates["TARGET_DECK"]
@@ -8136,6 +8266,17 @@ Output ONLY the bullet points, written directly as style rules."""
             status = self.get_auto_prepare_status()
             self._notify_frontend("auto-prepare-update", status)
         return {"success": True, "config": self._config._data}
+
+    # ── Announcements Endpoints ──────────────────────────────────────────────
+    def get_announcements(self, force_refresh: bool = False) -> list[dict]:
+        return self._announcements_engine.get_active_announcements(force_refresh=force_refresh)
+
+    def dismiss_announcement(self, announcement_id: str) -> dict:
+        self._config.dismiss_announcement(announcement_id)
+        return {"success": True, "active": self._announcements_engine.get_active_announcements(force_refresh=False)}
+
+    def is_christmas_season(self) -> bool:
+        return is_christmas_season()
 
     # ── Supabase Auth & Onboarding Endpoints ─────────────────────────────────
     def login_synapse(self, email: str, password: str) -> dict:
@@ -8643,6 +8784,25 @@ def setup_cocoa_shortcuts():
                     walk_menu(item.submenu())
 
         walk_menu(main_menu)
+
+        # Register macOS wake observer to automatically refresh announcements
+        global _WAKE_OBSERVER_INSTANCE
+        if _WAKE_OBSERVER_INSTANCE is None:
+            try:
+                class SynapseWakeObserver(NSObject):
+                    def workspaceDidWake_(self, notification):
+                        if _GLOBAL_ANNOUNCEMENTS_ENGINE:
+                            _GLOBAL_ANNOUNCEMENTS_ENGINE.fetch_async(callback_notify=True)
+
+                _WAKE_OBSERVER_INSTANCE = SynapseWakeObserver.alloc().init()
+                AppKit.NSWorkspace.sharedWorkspace().notificationCenter().addObserver_selector_name_object_(
+                    _WAKE_OBSERVER_INSTANCE,
+                    "workspaceDidWake:",
+                    "NSWorkspaceDidWakeNotification",
+                    None
+                )
+            except Exception as obs_err:
+                pass
     except Exception as e:
         print(f"Cocoa menu shortcuts note: {e}")
 
@@ -8653,6 +8813,25 @@ def main():
     if HAS_COCOA:
         try:
             NSProcessInfo.processInfo().setProcessName_("Synapse")
+        except Exception:
+            pass
+
+        # Configure WebKit on macOS to allow third-party iframe storage persistence (for SBA question bank)
+        try:
+            from webview.platforms.cocoa import BrowserView
+            _orig_bv_init = BrowserView.__init__
+            def _patched_bv_init(self, window):
+                _orig_bv_init(self, window)
+                try:
+                    if hasattr(self, "webview") and self.webview:
+                        cfg = self.webview.configuration()
+                        if cfg and hasattr(cfg, "preferences"):
+                            prefs = cfg.preferences()
+                            if hasattr(prefs, "_setStorageBlockingPolicy_"):
+                                prefs._setStorageBlockingPolicy_(0)
+                except Exception:
+                    pass
+            BrowserView.__init__ = _patched_bv_init
         except Exception:
             pass
 
@@ -8685,6 +8864,14 @@ def main():
                     if not inst.webview.window():
                         inst.window.setContentView_(inst.webview)
                         inst.window.makeFirstResponder_(inst.webview)
+                    try:
+                        cfg = inst.webview.configuration()
+                        if cfg and hasattr(cfg, "preferences"):
+                            prefs = cfg.preferences()
+                            if hasattr(prefs, "_setStorageBlockingPolicy_"):
+                                prefs._setStorageBlockingPolicy_(0)
+                    except Exception:
+                        pass
         except Exception:
             pass
 
@@ -8695,7 +8882,17 @@ def main():
             AppHelper.callAfter(setup_cocoa_shortcuts)
 
     native_menus = build_native_menu(api)
-    webview.start(func=on_started, menu=native_menus, http_server=True, http_port=42173, debug=False)
+    webview_storage = str(APP_DATA_DIR / "webview_data")
+    Path(webview_storage).mkdir(parents=True, exist_ok=True)
+    webview.start(
+        func=on_started,
+        menu=native_menus,
+        http_server=True,
+        http_port=42173,
+        debug=False,
+        private_mode=False,
+        storage_path=webview_storage
+    )
 
 if __name__ == "__main__":
     main()

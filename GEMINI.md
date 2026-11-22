@@ -179,3 +179,18 @@ Every card proposal must be displayed directly in the chat inside a clear markdo
   2. Ask for user review, corrections, additions, or discards.
   3. Wait for explicit approval (e.g., *"looks good, push them"*).
   4. Only upon explicit confirmation, push the notes to the appropriate target deck in Anki via MCP.
+
+---
+
+## 4. GitHub-Hosted Announcements System
+
+<!-- Schema: [{"id": "unique-id", "title": "...", "message": "...", "type": "info", "active": true, "expires_at": "2026-12-31"}] -->
+
+The announcements system reads remote announcements from `https://raw.githubusercontent.com/Synapse-Study/synapse/main/announcements.json`.
+- **id** (`str`): Unique identifier for deduplication and dismissal tracking.
+- **title** (`str`): Short headline for the announcement banner.
+- **message** (`str`): Markdown-supported description or update message.
+- **type** (`str`): Visual style badge (`info`, `warning`, `success`, `festive`).
+- **active** (`bool`): Master toggle for displaying the banner.
+- **expires_at** (`str`): Expiration date string (`YYYY-MM-DD`); banners expire automatically past this date.
+- Dismissed announcement IDs are stored in `dismissed_announcements` within `config.json`.
