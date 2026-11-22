@@ -1572,7 +1572,7 @@ class GeminiCardsEngine:
 
         # Task-calibrated fallback cascade:
         # Notes synthesis strictly restricts to flagship models (gemini-4-hydrogen & gemini-3.8-flash) with thinking_level="medium".
-        # It never downgrades to gemini-3.5-flash-lite on 503 errors.
+        # Strictly preserves medical depth and rigor (never downgrades to flash-lite or preview).
         if restrict_to_flagship:
             cascade = [
                 "gemini-4-hydrogen",
@@ -4871,6 +4871,35 @@ class KCLTimetableManager:
         "4MBBS202": ("PAS2", "Physiology and Anatomy of Systems 2"),
     }
 
+    @staticmethod
+    def is_lecture_activity(activity_type: str, title: str = "", summary: str = "", location: str = "") -> bool:
+        """Determines if a timetable session is an actual examinable lecture.
+        Excludes Self-Study, KEATS e-learning, Workshops, Tutorials, Clinical Skills, and Dissection labs.
+        """
+        act_low = (activity_type or "").lower().strip()
+        title_low = (title or "").lower()
+        sum_low = (summary or "").lower()
+        loc_low = (location or "").lower()
+
+        # Non-lecture explicit exclusions
+        non_lecture_indicators = [
+            "self-study", "self study", "e-learning", "keats", "scenario",
+            "workshop", "tutorial", "dissection", "clinical skill", "anatomy lab",
+            "practical", "assessment", "case based discussion", "symposium"
+        ]
+        for term in non_lecture_indicators:
+            if term in act_low or term in title_low or term in sum_low:
+                return False
+
+        if "dissecting" in loc_low or "anatomy lab" in loc_low:
+            return False
+
+        # Must be explicitly designated as Lecture
+        if act_low == "lecture" or "lecture" in act_low:
+            return True
+
+        return False
+
     @classmethod
     def clean_kcl_event(cls, ev: dict) -> dict:
         raw_summary = (ev.get("raw_summary") or ev.get("summary") or "").strip()
@@ -5040,11 +5069,14 @@ class KCLTimetableManager:
             except Exception:
                 pass
 
+        is_lecture = cls.is_lecture_activity(activity_type, clean_title, raw_summary, loc)
+
         return {
             **ev,
             "code": lec_code or module_code,
             "lec_code": lec_code,
             "type": activity_type,
+            "is_lecture": is_lecture,
             "clean_title": clean_title,
             "module_code": module_code,
             "module_short": module_short,
@@ -5788,6 +5820,10 @@ class AppAPI:
         self._last_user_activity: float = 0.0
         self._auto_prep_thread: Optional[threading.Thread] = None
         self._stop_requested: bool = False
+        self._auto_prep_attempts: dict[str, int] = {}
+        self._auto_prep_status: dict[str, dict] = {}
+        self._auto_prep_quota_exhausted_until: float = 0.0
+        self._notified_missing_slides: set[str] = set()
 
     def set_window(self, window: webview.Window):
         self._window = window
@@ -5883,9 +5919,10 @@ class AppAPI:
         return check_github_update()
 
     # ── Home Dashboard & KCL Timetable ───────────────────────────────────────
-    def get_home_dashboard(self) -> dict:
+    def get_home_dashboard(self, view_mode: str = "today", target_date: str = "") -> dict:
+        vm = view_mode if view_mode in ("today", "tomorrow", "week", "date") else "today"
         return {
-            "timetable": self.get_timetable_sessions("today"),
+            "timetable": self.get_timetable_sessions(vm, target_date=target_date),
             "daily_fact": self.get_daily_fledge_fact(force_refresh=False),
             "recent_lectures": self.get_recent_lectures(),
             "anki_stats": self.get_anki_study_stats(),
@@ -5997,10 +6034,21 @@ class AppAPI:
     def get_auto_prepare_status(self) -> dict:
         enabled = bool(self._config.get("AUTO_PREPARE_NOTES", True))
         is_off_peak = self._is_off_peak_time()
-        label = "Auto-Prep: Active (Off-peak)" if (enabled and is_off_peak) else ("Auto-Prep: Scheduled (Off-peak)" if enabled else "Auto-Prep: Disabled")
+        is_quota_exhausted = time.time() < getattr(self, "_auto_prep_quota_exhausted_until", 0.0)
+
+        if not enabled:
+            label = "Auto-Prep: Disabled"
+        elif is_quota_exhausted:
+            label = "Auto-Prep: Quota Paused (20 req/day limit)"
+        elif is_off_peak:
+            label = "Auto-Prep: Active (Off-peak)"
+        else:
+            label = "Auto-Prep: Scheduled (Off-peak)"
+
         return {
             "enabled": enabled,
             "is_off_peak": is_off_peak,
+            "is_quota_exhausted": is_quota_exhausted,
             "label": label
         }
 
@@ -6015,7 +6063,8 @@ class AppAPI:
         while not getattr(self, "_stop_requested", False):
             try:
                 enabled = self._config.get("AUTO_PREPARE_NOTES", True)
-                if enabled and self._is_off_peak_time():
+                is_quota_exhausted = time.time() < getattr(self, "_auto_prep_quota_exhausted_until", 0.0)
+                if enabled and not is_quota_exhausted and self._is_off_peak_time():
                     if not self._is_user_busy():
                         self._run_auto_prepare_cycle()
             except Exception as e:
@@ -6031,7 +6080,22 @@ class AppAPI:
             if self._is_user_busy():
                 print("[AutoPrepareNotes] User activity detected; yielding background pre-generation.")
                 return
+
+            # Strictly only auto-generate notes for actual lectures (skip Self-Study, Workshops, Dissections, etc.)
+            if not s.get("is_lecture", False):
+                continue
+
+            session_key = (s.get("code") or s.get("lec_code") or s.get("clean_title") or s.get("raw_summary") or "").strip()
+            if not session_key:
+                continue
+
             if self._find_saved_note_for_session(s):
+                self._auto_prep_status[session_key] = {"status": "ready", "message": "Notes Ready"}
+                continue
+
+            # Circuit-breaker: do not retry more than 2 failed attempts per session per day to protect prompt quota
+            attempts = self._auto_prep_attempts.get(session_key, 0)
+            if attempts >= 2:
                 continue
 
             lec_code = s.get("lec_code") or ""
@@ -6047,6 +6111,18 @@ class AppAPI:
             )
 
             if not (slide_info and slide_info.get("found")):
+                self._auto_prep_status[session_key] = {
+                    "status": "slides_missing",
+                    "message": "Slides not found in OneDrive"
+                }
+                # Alert user once per lecture so they can link the presentation manually
+                if session_key not in self._notified_missing_slides:
+                    self._notified_missing_slides.add(session_key)
+                    lec_name = s.get("clean_title") or lec_code or s.get("code") or "lecture"
+                    self._notify_frontend("app-status", {
+                        "type": "warning",
+                        "message": f"Auto-Prep: Couldn't find slides for '{lec_name}'. Click 'Find Slides' to link presentation."
+                    })
                 continue
 
             f_path = Path(slide_info["file_path"])
@@ -6064,7 +6140,9 @@ class AppAPI:
                 return
 
             lec_title = s.get("clean_title") or lec_code or f_path.stem
-            print(f"[AutoPrepareNotes] Quietly pre-generating notes for '{lec_title}' ({f_path.name})...")
+            print(f"[AutoPrepareNotes] Quietly pre-generating notes for '{lec_title}' ({f_path.name}) [attempt {attempts + 1}/2]...")
+
+            self._auto_prep_attempts[session_key] = attempts + 1
 
             try:
                 def _bg_status_check(msg, model=None):
@@ -6078,6 +6156,7 @@ class AppAPI:
                 )
 
                 if self._is_user_busy():
+                    self._auto_prep_attempts[session_key] = max(0, attempts)
                     return
 
                 mod, blk = InAppNotesManager.detect_module_and_block(lec_title, str(f_path))
@@ -6107,18 +6186,50 @@ class AppAPI:
                         except Exception:
                             pass
 
+                    self._auto_prep_status[session_key] = {"status": "ready", "message": "Notes Ready"}
                     print(f"[AutoPrepareNotes] Notes ready for '{lec_title}' saved to {mod} · {blk} ✓")
                     self._notify_frontend("timetable-update", {
                         "type": "note_ready",
                         "note_id": note_id,
                         "session_code": s.get("code")
                     })
+                    self._notify_frontend("app-status", {
+                        "type": "success",
+                        "message": f"Auto-Prep: Notes ready for '{lec_title}' 🩺✓"
+                    })
                     time.sleep(15)  # Pace between lectures
             except InterruptedError:
                 print(f"[AutoPrepareNotes] Yielded generation for '{lec_title}' due to user activity.")
+                self._auto_prep_attempts[session_key] = max(0, attempts)
                 return
             except Exception as ge:
-                print(f"[AutoPrepareNotes] Error pre-generating notes for '{lec_title}': {ge}")
+                err_str = str(ge)
+                print(f"[AutoPrepareNotes] Error pre-generating notes for '{lec_title}': {err_str}")
+                is_quota = any(q in err_str.lower() for q in [
+                    "quota exceeded", "resource_exhausted", "429", "requests per day", "rate limit"
+                ])
+                if is_quota:
+                    self._auto_prep_quota_exhausted_until = time.time() + (8 * 3600)
+                    self._auto_prep_status[session_key] = {
+                        "status": "quota_exhausted",
+                        "message": "Daily Gemini quota (20 req/day) exhausted. Resumes tomorrow."
+                    }
+                    self._notify_frontend("auto-prepare-update", self.get_auto_prepare_status())
+                    self._notify_frontend("app-status", {
+                        "type": "warning",
+                        "message": "Auto-Prep: Gemini daily limit reached (20 req/day). Pausing until tomorrow."
+                    })
+                    return
+                else:
+                    self._auto_prep_status[session_key] = {
+                        "status": "failed",
+                        "message": err_str[:80]
+                    }
+                    if self._auto_prep_attempts[session_key] >= 2:
+                        self._notify_frontend("app-status", {
+                            "type": "error",
+                            "message": f"Auto-Prep failed for '{lec_title}': {err_str[:60]}. Click 'Find Slides' to check manually."
+                        })
 
     def get_timetable_sessions(self, view_mode: str = "today", target_date: str = "") -> dict:
         data = self._timetable_manager.get_sessions_for_view(view_mode, target_date=target_date)
@@ -6131,6 +6242,17 @@ class AppAPI:
                 s["saved_note_title"] = saved["title"]
             else:
                 s["has_saved_note"] = False
+
+            # Only track and display auto-prep status for actual lectures
+            if s.get("is_lecture", False):
+                session_key = (s.get("code") or s.get("lec_code") or s.get("clean_title") or s.get("raw_summary") or "").strip()
+                ap_info = getattr(self, "_auto_prep_status", {}).get(session_key, {})
+                s["auto_prep_status"] = ap_info.get("status", "")
+                s["auto_prep_message"] = ap_info.get("message", "")
+            else:
+                s["auto_prep_status"] = ""
+                s["auto_prep_message"] = ""
+
         for group in data.get("week_grouped", []):
             for s in group.get("sessions", []):
                 saved = self._find_saved_note_for_session(s)
@@ -6140,6 +6262,16 @@ class AppAPI:
                     s["saved_note_title"] = saved["title"]
                 else:
                     s["has_saved_note"] = False
+
+                if s.get("is_lecture", False):
+                    session_key = (s.get("code") or s.get("lec_code") or s.get("clean_title") or s.get("raw_summary") or "").strip()
+                    ap_info = getattr(self, "_auto_prep_status", {}).get(session_key, {})
+                    s["auto_prep_status"] = ap_info.get("status", "")
+                    s["auto_prep_message"] = ap_info.get("message", "")
+                else:
+                    s["auto_prep_status"] = ""
+                    s["auto_prep_message"] = ""
+
         data["auto_prepare_status"] = self.get_auto_prepare_status()
         return data
 
@@ -6238,6 +6370,32 @@ class AppAPI:
                     score += 15
                     matched_words += 1
 
+            # 4. Contrastive keyword penalty:
+            # If a topic keyword is a discriminating adjective (e.g. "aerobic"), penalise files
+            # that contain a known opposite term (e.g. "anaerobic") but NOT the topic keyword as a
+            # whole word. Use word-boundary regex to avoid "aerobic" matching inside "anaerobic".
+            # This prevents ties when two files share generic keywords (e.g. "metabolism") but
+            # differ only in a contrastive qualifier.
+            CONTRASTIVE_PAIRS = [
+                ("aerobic", "anaerobic"),
+                ("anaerobic", "aerobic"),
+                ("systolic", "diastolic"),
+                ("diastolic", "systolic"),
+                ("sympathetic", "parasympathetic"),
+                ("parasympathetic", "sympathetic"),
+                ("afferent", "efferent"),
+                ("efferent", "afferent"),
+                ("oxidative", "glycolytic"),
+                ("glycolytic", "oxidative"),
+            ]
+            for tw in topic_words:
+                for pos_kw, neg_kw in CONTRASTIVE_PAIRS:
+                    if (tw == pos_kw
+                            and re.search(r'\b' + re.escape(neg_kw) + r'\b', fn_low)
+                            and not re.search(r'\b' + re.escape(pos_kw) + r'\b', fn_low)):
+                        score -= 20  # Strong penalty for wrong polarity
+                        break
+
             # Strict gating:
             # - If a specific lecture code exists (e.g. ACRS04L), require matching the lecture code OR >= 2 specific topic words.
             # - Never allow generic module match or single generic word to trigger a match.
@@ -6246,7 +6404,7 @@ class AppAPI:
             if not target_lec and matched_words < 1:
                 return 0
 
-            return score
+            return max(score, 0)
 
         # 1. Search in SQLite index
         try:
