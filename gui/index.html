@@ -1744,6 +1744,13 @@
               <span id="note-module-block-text" class="text-xs font-bold text-[var(--text-primary)] max-w-[130px] truncate">PAS · ACRS</span>
             </div>
 
+            <!-- Active Loaded Note Model Pill -->
+            <div id="note-model-pill" class="hidden items-center gap-1.5 px-2.5 py-1 rounded-lg bg-purple-50/70 dark:bg-purple-950/40 border border-purple-200/70 dark:border-purple-800/50 shadow-2xs" title="AI Model used to author this note">
+              <i data-lucide="cpu" class="w-3.5 h-3.5 text-purple-600 dark:text-purple-400"></i>
+              <span class="text-[11px] font-semibold text-purple-700/80 dark:text-purple-300/80">Model:</span>
+              <span id="note-model-text" class="text-xs font-bold text-purple-800 dark:text-purple-200 max-w-[140px] truncate">Gemini 4 Hydrogen</span>
+            </div>
+
             <button onclick="generateAINotes()" id="btn-generate-ai-notes" class="px-3 py-1 rounded-lg bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white font-semibold text-xs flex items-center gap-1.5 shadow-2xs transition-all cursor-pointer">
               <i data-lucide="sparkles" class="w-3.5 h-3.5"></i>
               <span id="btn-generate-ai-notes-text">Generate AI Notes</span>
@@ -2604,29 +2611,56 @@
               </div>
             </div>
 
-            <div class="col-span-full flex flex-col gap-3">
-              <div>
-                <div class="flex items-center justify-between mb-1">
-                  <label class="font-semibold text-[var(--text-secondary)]">Gemini API Key — Lecture Notes</label>
-                  <button type="button" onclick="openExternalLink('https://aistudio.google.com/apikey')" class="text-[11px] font-semibold text-blue-600 dark:text-blue-400 hover:underline flex items-center gap-1 cursor-pointer">
-                    <span>Get Key at aistudio.google.com/apikey</span>
-                    <i data-lucide="external-link" class="w-3 h-3"></i>
-                  </button>
+            <!-- Compact Gemini API Keys Selector Card -->
+            <div class="col-span-full rounded-2xl border border-[var(--border-card)] bg-[var(--bg-card-subtle)] p-3.5 flex flex-col gap-2.5 shadow-2xs">
+              <div class="flex items-center justify-between gap-2">
+                <div class="flex items-center gap-2">
+                  <i data-lucide="key-round" class="w-4 h-4 text-blue-600 dark:text-blue-400 shrink-0"></i>
+                  <span class="text-xs font-bold text-[var(--text-primary)]">Gemini API Keys</span>
                 </div>
-                <input id="setting-gemini-notes-key" type="password" class="w-full font-mono text-[11px] px-3 py-1.5 rounded-xl border border-[var(--border-card)] bg-[var(--bg-card)] text-[var(--text-primary)] focus:outline-none" placeholder="AIzaSy... (Dedicated for Notion notes & Anki cards)" />
-                <p class="text-[10px] text-[var(--text-dim)] mt-1">Create in a separate Google AI Studio project for dedicated note-generation quota</p>
+                <button type="button" onclick="openExternalLink('https://aistudio.google.com/apikey')" class="text-[11px] font-semibold text-blue-600 dark:text-blue-400 hover:underline flex items-center gap-1 cursor-pointer shrink-0">
+                  <span>Get Keys at aistudio.google.com/apikey</span>
+                  <i data-lucide="external-link" class="w-3 h-3"></i>
+                </button>
               </div>
 
-              <div>
-                <div class="flex items-center justify-between mb-1">
-                  <label class="font-semibold text-[var(--text-secondary)]">Gemini API Key — AI Tutor</label>
-                  <button type="button" onclick="openExternalLink('https://aistudio.google.com/apikey')" class="text-[11px] font-semibold text-blue-600 dark:text-blue-400 hover:underline flex items-center gap-1 cursor-pointer">
-                    <span>Get Key at aistudio.google.com/apikey</span>
-                    <i data-lucide="external-link" class="w-3 h-3"></i>
-                  </button>
+              <div class="flex items-center gap-2">
+                <label for="select-settings-api-key-view" class="text-[11px] font-semibold text-[var(--text-secondary)] shrink-0">Active Key View:</label>
+                <select id="select-settings-api-key-view" onchange="switchSettingsApiKeyView(this.value)" class="flex-1 text-xs font-semibold px-2.5 py-1.5 rounded-xl border border-[var(--border-card)] bg-[var(--bg-card)] text-[var(--text-primary)] focus:outline-none shadow-2xs cursor-pointer">
+                  <option value="notes">Lecture Notes Key (Dedicated for Notes & Anki Cards)</option>
+                  <option value="chat">AI Tutor Key (Dedicated for Dr. Fledge Chat)</option>
+                  <option value="spare">Spare Backup Key (Emergency Quota Reserve)</option>
+                </select>
+              </div>
+
+              <!-- Notes Key View -->
+              <div id="settings-api-key-panel-notes" class="space-y-1">
+                <div class="flex items-center justify-between">
+                  <span class="text-[11px] font-semibold text-[var(--text-secondary)]">Notes & Cards Key (Project 1)</span>
+                  <span id="badge-settings-notes-key-status" class="text-[10px] font-semibold text-emerald-600 dark:text-emerald-400">Configured ✓</span>
                 </div>
-                <input id="setting-gemini-chat-key" type="password" class="w-full font-mono text-[11px] px-3 py-1.5 rounded-xl border border-[var(--border-card)] bg-[var(--bg-card)] text-[var(--text-primary)] focus:outline-none" placeholder="AIzaSy... (Dedicated for AI Tutor chat)" />
-                <p class="text-[10px] text-[var(--text-dim)] mt-1">Create in a second Google AI Studio project so chat never shares quota with notes</p>
+                <input id="setting-gemini-notes-key" type="password" oninput="updateSettingsKeyBadges()" class="w-full font-mono text-[11px] px-3 py-1.5 rounded-xl border border-[var(--border-card)] bg-[var(--bg-card)] text-[var(--text-primary)] focus:outline-none" placeholder="AIzaSy... (Dedicated for Notion notes & Anki cards)" />
+                <p class="text-[10px] text-[var(--text-dim)]">Dedicated for full-lecture synthesis and Anki cards. Has its own separate 20 req/day quota.</p>
+              </div>
+
+              <!-- Chat Key View -->
+              <div id="settings-api-key-panel-chat" class="space-y-1 hidden">
+                <div class="flex items-center justify-between">
+                  <span class="text-[11px] font-semibold text-[var(--text-secondary)]">AI Tutor Chat Key (Project 2)</span>
+                  <span id="badge-settings-chat-key-status" class="text-[10px] font-semibold text-emerald-600 dark:text-emerald-400">Configured ✓</span>
+                </div>
+                <input id="setting-gemini-chat-key" type="password" oninput="updateSettingsKeyBadges()" class="w-full font-mono text-[11px] px-3 py-1.5 rounded-xl border border-[var(--border-card)] bg-[var(--bg-card)] text-[var(--text-primary)] focus:outline-none" placeholder="AIzaSy... (Dedicated for AI Tutor chat)" />
+                <p class="text-[10px] text-[var(--text-dim)]">Dedicated for Dr. Fledge chat so asking questions never consumes your lecture note quota.</p>
+              </div>
+
+              <!-- Spare Key View -->
+              <div id="settings-api-key-panel-spare" class="space-y-1 hidden">
+                <div class="flex items-center justify-between">
+                  <span class="text-[11px] font-semibold text-[var(--text-secondary)]">Spare Backup Key (Project 3)</span>
+                  <span id="badge-settings-spare-key-status" class="text-[10px] font-semibold text-amber-600 dark:text-amber-400">Optional (Not Set)</span>
+                </div>
+                <input id="setting-gemini-spare-key" type="password" oninput="updateSettingsKeyBadges()" class="w-full font-mono text-[11px] px-3 py-1.5 rounded-xl border border-[var(--border-card)] bg-[var(--bg-card)] text-[var(--text-primary)] focus:outline-none" placeholder="AIzaSy... (Emergency failover key for Notes or Chat quota)" />
+                <p class="text-[10px] text-[var(--text-dim)]">Emergency failover key used automatically if Notes or AI Tutor hits daily quota (429). Never wasted on high demand (503).</p>
               </div>
             </div>
 
@@ -2945,7 +2979,7 @@
             <div id="api-tutorial-content" class="hidden px-4 pb-4 pt-2 text-xs text-[var(--text-secondary)] border-t border-blue-200/60 dark:border-blue-900/40 space-y-2.5">
               <div class="p-2.5 rounded-xl bg-blue-100/80 dark:bg-blue-950/70 text-[11px] text-blue-950 dark:text-blue-200 border border-blue-200/80 dark:border-blue-800/60 flex items-start gap-2">
                 <i data-lucide="lightbulb" class="w-4 h-4 text-amber-500 shrink-0 mt-0.5"></i>
-                <span><b>Why two keys?</b> Google AI Studio gives each separate project its own daily free quota (20 requests/day for Gemini 4 Hydrogen / 3.8 Flash, and 1,500 requests/day for Flash Lite). Creating two projects doubles your quota and ensures lecture notes never exhaust your AI tutor quota!</span>
+                <span><b>Why multiple keys?</b> Google AI Studio gives each project its own daily free quota (20 requests/day for Gemini 4 Hydrogen / 3.8 Flash, and 1,500 requests/day for Flash Lite). Creating separate projects multiplies your quota and ensures notes and AI tutor never compete for requests!</span>
               </div>
 
               <ol class="space-y-2 list-decimal list-inside text-[11px] leading-relaxed">
@@ -2960,6 +2994,10 @@
                 <li class="pl-1">
                   <span class="font-bold text-[var(--text-primary)]">Create Key 2 (AI Tutor):</span>
                   Click <b>"Create API key"</b> again → select <b>"Create API key in new project"</b> → name it <code class="px-1.5 py-0.5 rounded bg-blue-100 dark:bg-blue-900/60 text-blue-900 dark:text-blue-200 font-mono font-bold">Synapse Tutor</code> → copy the key and paste into the <b>Gemini API Key — AI Tutor</b> box below.
+                </li>
+                <li class="pl-1">
+                  <span class="font-bold text-[var(--text-primary)]">Create Key 3 (Spare Backup — Optional):</span>
+                  Click <b>"Create API key"</b> again → select <b>"Create API key in new project"</b> → name it <code class="px-1.5 py-0.5 rounded bg-blue-100 dark:bg-blue-900/60 text-blue-900 dark:text-blue-200 font-mono font-bold">Synapse Spare</code> → copy the key and paste into the <b>Gemini API Key — Spare Backup</b> box below. This key acts as an emergency quota reserve if Notes or AI Tutor hits daily limits.
                 </li>
               </ol>
             </div>
@@ -2977,6 +3015,15 @@
               <label class="block font-semibold text-[var(--text-secondary)] mb-1">Gemini API Key — AI Tutor</label>
               <input id="onboard-gemini-chat-key" type="password" class="w-full font-mono text-[11px] px-3.5 py-2.5 rounded-xl border border-[var(--border-card)] bg-[var(--bg-card-subtle)] text-[var(--text-primary)] focus:outline-none" placeholder="AIzaSy... (Dedicated for AI Tutor Chat)" />
               <p class="text-[10px] text-[var(--text-dim)] mt-1">Create in project 'Synapse Tutor' so chat never shares quota with notes</p>
+            </div>
+
+            <div>
+              <div class="flex items-center justify-between mb-1">
+                <label class="block font-semibold text-[var(--text-secondary)]">Gemini API Key — Spare Backup <span class="text-[10px] font-normal text-[var(--text-dim)]">(Optional)</span></label>
+                <span class="text-[10px] text-emerald-600 dark:text-emerald-400 font-medium">🛡️ Emergency Quota Backup</span>
+              </div>
+              <input id="onboard-gemini-spare-key" type="password" class="w-full font-mono text-[11px] px-3.5 py-2.5 rounded-xl border border-[var(--border-card)] bg-[var(--bg-card-subtle)] text-[var(--text-primary)] focus:outline-none" placeholder="AIzaSy... (Emergency failover key for Notes or Chat quota)" />
+              <p class="text-[10px] text-[var(--text-dim)] mt-1">Create in project 'Synapse Spare'. Automatically activated if Notes or AI Tutor runs out of daily requests.</p>
             </div>
           </div>
         </div>
@@ -3776,7 +3823,7 @@
       </div>
       <h3 class="text-lg font-bold text-[var(--text-primary)]">Synapse</h3>
       <div class="flex items-center gap-2">
-        <span id="about-version-badge" class="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-blue-50 text-blue-700 dark:bg-blue-950/40 dark:text-blue-300">Version 2.3.0</span>
+        <span id="about-version-badge" class="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-blue-50 text-blue-700 dark:bg-blue-950/40 dark:text-blue-300">Version 2.3.1</span>
         <span class="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-emerald-50 text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300 border border-emerald-200/60 dark:border-emerald-800/40 flex items-center gap-1">
           <i data-lucide="code-2" class="w-3 h-3 text-emerald-600 dark:text-emerald-400"></i> Fully Built with Python 3.12
         </span>
@@ -4166,7 +4213,7 @@
         <div class="p-3 rounded-xl bg-[var(--bg-card-subtle)] border border-[var(--border-card)] flex items-start gap-2.5 text-[11px] text-[var(--text-dim)]">
           <i data-lucide="info" class="w-4 h-4 text-blue-500 shrink-0 mt-0.5"></i>
           <div>
-            <span class="font-semibold text-[var(--text-primary)]">Automatic diagnostics:</span> Includes Synapse version (v2.3.0), macOS platform, and active tab context so the developer can reproduce bugs directly.
+            <span class="font-semibold text-[var(--text-primary)]">Automatic diagnostics:</span> Includes Synapse version (v2.3.1), macOS platform, and active tab context so the developer can reproduce bugs directly.
           </div>
         </div>
 
@@ -5684,7 +5731,7 @@
     }
 
     function askAiTutorAboutSession(cleanTitle, topicTitle, moduleName) {
-      switchTab('chatbot');
+      switchTab('ai');
       const input = document.getElementById('chat-input-textarea');
       if (input) {
         const queryTopic = topicTitle || cleanTitle;
@@ -6292,7 +6339,7 @@
       if (target === 'canvas') { tabName = 'slides'; subMode = 'canvas'; }
       else if (target === 'gallery') { tabName = 'slides'; subMode = 'gallery'; }
       else if (target === 'flashcards') { tabName = 'anki'; }
-      else if (target === 'chat') { tabName = 'ai'; }
+      else if (target === 'chat' || target === 'chatbot' || target === 'ai' || target === 'ai-tutor') { tabName = 'ai'; }
 
       state.activeTab = tabName;
       document.querySelectorAll('.tab-pane').forEach(el => el.classList.add('hidden'));
@@ -7975,22 +8022,44 @@
     }
 
     let notesWidthState = 'standard';
+    let notesWidthSavedDrawerState = false;
+
     function toggleNotesWidth() {
       const doc = document.getElementById('notes-preview-doc');
+      const pane = document.getElementById('notes-preview-pane');
       const lbl = document.getElementById('lbl-toggle-notes-width');
       const icon = document.getElementById('icon-toggle-notes-width');
+      const libPanel = document.getElementById('notes-library-panel');
+
       if (!doc) return;
       if (notesWidthState === 'standard') {
         notesWidthState = 'full';
-        doc.classList.remove('max-w-5xl');
+        // Auto-collapse library panel to expand viewing width across entire window
+        notesWidthSavedDrawerState = (libPanel && !libPanel.classList.contains('hidden'));
+        if (notesWidthSavedDrawerState) {
+          toggleNotesLibraryDrawer(false);
+        }
+        doc.classList.remove('max-w-5xl', 'mx-auto');
         doc.classList.add('max-w-none', 'w-full');
+        if (pane) {
+          pane.classList.remove('p-4', 'md:p-6');
+          pane.classList.add('p-2', 'md:p-3');
+        }
         if (lbl) lbl.innerText = 'Standard Width';
         if (icon) icon.setAttribute('data-lucide', 'minimize-2');
         showToast("Switched to Full Width viewing mode", "info");
       } else {
         notesWidthState = 'standard';
         doc.classList.remove('max-w-none', 'w-full');
-        doc.classList.add('max-w-5xl');
+        doc.classList.add('max-w-5xl', 'mx-auto');
+        if (pane) {
+          pane.classList.remove('p-2', 'md:p-3');
+          pane.classList.add('p-4', 'md:p-6');
+        }
+        // Restore library drawer if it was open before
+        if (notesWidthSavedDrawerState) {
+          toggleNotesLibraryDrawer(true);
+        }
         if (lbl) lbl.innerText = 'Full Width';
         if (icon) icon.setAttribute('data-lucide', 'maximize-2');
         showToast("Switched to Standard (1024px) reading mode", "info");
@@ -8650,6 +8719,7 @@
     let selectedNotionTargetId = null;
     let selectedNotionTargetTitle = null;
     let cachedNotionCandidates = [];
+    let currentNotionCandidates = [];
     let notionSearchTimer = null;
     let isDetectingNotionTarget = false;
 
@@ -8669,8 +8739,15 @@
         dot.className = "w-2 h-2 rounded-full bg-amber-400 animate-pulse shrink-0";
       }
 
+      let noteTitle = '';
+      let noteId = inAppNotesState.activeNoteId || '';
+      if (noteId && inAppNotesState.notes) {
+        const found = inAppNotesState.notes.find(n => n.id === noteId);
+        if (found) noteTitle = found.title || '';
+      }
+
       try {
-        const res = await window.pywebview.api.detect_notion_target_page();
+        const res = await window.pywebview.api.detect_notion_target_page(noteTitle, noteId);
         if (res && res.success) {
           if (res.found && res.target) {
             detectedNotionTarget = res.target;
@@ -8895,6 +8972,8 @@
       const countEl = document.getElementById('notion-candidates-count');
       if (!listEl) return;
 
+      currentNotionCandidates = candidates || [];
+
       if (!candidates || candidates.length === 0) {
         listEl.innerHTML = `<div class="p-4 text-center text-xs text-[var(--text-dim)]">No Notion pages found matching your search.</div>`;
         if (countEl) countEl.innerText = "0 pages";
@@ -8916,11 +8995,11 @@
                class="group p-2.5 rounded-xl border ${isSelected ? 'border-indigo-500 bg-indigo-50/50 dark:bg-indigo-950/30' : 'border-[var(--border-card)] hover:border-indigo-300 dark:hover:border-indigo-700 bg-[var(--bg-card)]'} flex items-center justify-between gap-3 transition-all cursor-pointer">
             <div class="flex items-center gap-2.5 min-w-0">
               <i data-lucide="${isSelected ? 'check-circle-2' : 'file-text'}" class="w-4 h-4 ${isSelected ? 'text-indigo-600 dark:text-indigo-400' : 'text-[var(--text-dim)] group-hover:text-indigo-500'} shrink-0"></i>
-              <span class="text-xs font-semibold text-[var(--text-primary)] truncate ${isSelected ? 'text-indigo-700 dark:text-indigo-300' : ''}">${titleSafe}</span>
+              <span class="text-xs font-semibold text-[var(--text-primary)] truncate ${isSelected ? 'text-indigo-700 dark:text-indigo-300 font-bold' : ''}">${titleSafe}</span>
             </div>
             <div class="flex items-center gap-2 shrink-0">
               ${scoreBadge}
-              <button type="button" class="px-2.5 py-1 rounded-lg text-[11px] font-bold ${isSelected ? 'bg-indigo-600 text-white' : 'bg-slate-100 dark:bg-neutral-800 text-[var(--text-secondary)] group-hover:bg-indigo-50 group-hover:text-indigo-600 dark:group-hover:bg-neutral-700'} transition-colors">
+              <button type="button" class="px-2.5 py-1 rounded-lg text-[11px] font-bold ${isSelected ? 'bg-indigo-600 text-white shadow-2xs' : 'bg-slate-100 dark:bg-neutral-800 text-[var(--text-secondary)] group-hover:bg-indigo-50 group-hover:text-indigo-600 dark:group-hover:bg-neutral-700'} transition-colors">
                 ${isSelected ? 'Selected ✓' : 'Select'}
               </button>
             </div>
@@ -8956,8 +9035,10 @@
       updateNotionToolbarPill(pageTitle, true, 1.0);
       showToast(`Selected Notion destination: '${pageTitle}'`, "info");
 
-      const searchInput = document.getElementById('input-notion-search-pages');
-      if (!searchInput || !searchInput.value.trim()) {
+      // Re-render currently displayed candidate list so the checkmark and button state immediately update
+      if (currentNotionCandidates && currentNotionCandidates.length > 0) {
+        renderNotionCandidateList(currentNotionCandidates);
+      } else {
         renderNotionCandidateList(cachedNotionCandidates);
       }
     }
@@ -8988,7 +9069,7 @@
       showToast("Searching Notion & uploading slide diagrams...", "info");
 
       try {
-        const res = await window.pywebview.api.push_notes_to_notion(content, targetId);
+        const res = await window.pywebview.api.push_notes_to_notion(content, targetId, inAppNotesState.activeNoteId || '');
         if (res && res.success) {
           showToast(`Successfully pushed notes & diagrams to Notion page '${res.page_title}'! ✓`, "success");
           closeNotionDestinationModal();
@@ -9324,8 +9405,15 @@
           // Merge any saved slide diagrams loaded from disk for this specific note
           notesState.cachedDiagrams = (res.diagrams && Object.keys(res.diagrams).length > 0) ? { ...res.diagrams } : {};
 
-          // Update active module/block pill
-          updateNoteModuleBlockPill(note.module, note.block);
+          // Update active module/block and model pill
+          updateNoteModuleBlockPill(note.module, note.block, note.model);
+
+          // Reset Notion destination targeting so it re-detects the destination page for THIS note
+          detectedNotionTarget = null;
+          selectedNotionTargetId = null;
+          selectedNotionTargetTitle = null;
+          cachedNotionCandidates = [];
+          autoDetectNotionTargetPage(true);
 
           // Render preview
           setNotesViewMode('preview');
@@ -9343,18 +9431,32 @@
       }
     }
 
-    function updateNoteModuleBlockPill(mod, blk) {
+    function updateNoteModuleBlockPill(mod, blk, model = '') {
       const pill = document.getElementById('note-module-block-pill');
       const text = document.getElementById('note-module-block-text');
-      if (!pill || !text) return;
-      if (mod && blk) {
-        text.innerText = `${mod} · ${blk}`;
-        pill.classList.remove('hidden');
-      } else if (mod) {
-        text.innerText = mod;
-        pill.classList.remove('hidden');
-      } else {
-        pill.classList.add('hidden');
+      if (pill && text) {
+        if (mod && blk) {
+          text.innerText = `${mod} · ${blk}`;
+          pill.classList.remove('hidden');
+        } else if (mod) {
+          text.innerText = mod;
+          pill.classList.remove('hidden');
+        } else {
+          pill.classList.add('hidden');
+        }
+      }
+
+      const mPill = document.getElementById('note-model-pill');
+      const mText = document.getElementById('note-model-text');
+      if (mPill && mText) {
+        const rawModel = (model || 'gemini-4-hydrogen').toLowerCase();
+        let cleanName = model || 'Gemini 4 Hydrogen';
+        if (rawModel.includes('4-hydrogen')) cleanName = 'Gemini 4 Hydrogen';
+        else if (rawModel.includes('3.8-flash')) cleanName = 'Gemini 3.8 Flash';
+        else if (rawModel.includes('3.5-flash-lite')) cleanName = 'Flash-Lite';
+        else if (rawModel.includes('3.5-flash')) cleanName = 'Gemini 3.5 Flash';
+        mText.innerText = cleanName;
+        mPill.classList.remove('hidden');
       }
     }
 
@@ -10853,6 +10955,42 @@
       }
     }
 
+    function switchSettingsApiKeyView(view) {
+      const panels = {
+        notes: document.getElementById('settings-api-key-panel-notes'),
+        chat: document.getElementById('settings-api-key-panel-chat'),
+        spare: document.getElementById('settings-api-key-panel-spare'),
+      };
+      Object.keys(panels).forEach(k => {
+        if (panels[k]) {
+          if (k === view) panels[k].classList.remove('hidden');
+          else panels[k].classList.add('hidden');
+        }
+      });
+    }
+
+    function updateSettingsKeyBadges() {
+      const notesVal = (document.getElementById('setting-gemini-notes-key')?.value || '').trim();
+      const chatVal = (document.getElementById('setting-gemini-chat-key')?.value || '').trim();
+      const spareVal = (document.getElementById('setting-gemini-spare-key')?.value || '').trim();
+
+      const bNotes = document.getElementById('badge-settings-notes-key-status');
+      if (bNotes) {
+        bNotes.innerText = notesVal ? 'Configured ✓' : 'Required (Missing)';
+        bNotes.className = notesVal ? 'text-[10px] font-semibold text-emerald-600 dark:text-emerald-400' : 'text-[10px] font-semibold text-red-500';
+      }
+      const bChat = document.getElementById('badge-settings-chat-key-status');
+      if (bChat) {
+        bChat.innerText = chatVal ? 'Configured ✓' : 'Recommended (Missing)';
+        bChat.className = chatVal ? 'text-[10px] font-semibold text-emerald-600 dark:text-emerald-400' : 'text-[10px] font-semibold text-amber-600 dark:text-amber-400';
+      }
+      const bSpare = document.getElementById('badge-settings-spare-key-status');
+      if (bSpare) {
+        bSpare.innerText = spareVal ? 'Configured ✓' : 'Optional (Not Set)';
+        bSpare.className = spareVal ? 'text-[10px] font-semibold text-emerald-600 dark:text-emerald-400' : 'text-[10px] font-semibold text-[var(--text-dim)]';
+      }
+    }
+
     async function openSettingsModal() {
       try {
         const cfg = await window.pywebview.api.get_config();
@@ -10877,10 +11015,14 @@
 
           const notesKey = cfg.GEMINI_NOTES_API_KEY || cfg.GEMINI_API_KEY || '';
           const chatKey = cfg.GEMINI_CHAT_API_KEY || cfg.GEMINI_API_KEY || '';
+          const spareKey = cfg.GEMINI_SPARE_API_KEY || cfg.gemini_spare_api_key || '';
           const settingNotesInput = document.getElementById('setting-gemini-notes-key');
           const settingChatInput = document.getElementById('setting-gemini-chat-key');
+          const settingSpareInput = document.getElementById('setting-gemini-spare-key');
           if (settingNotesInput) settingNotesInput.value = notesKey;
           if (settingChatInput) settingChatInput.value = chatKey;
+          if (settingSpareInput) settingSpareInput.value = spareKey;
+          updateSettingsKeyBadges();
           const notionKeyInput = document.getElementById('setting-notion-key');
           if (notionKeyInput) notionKeyInput.value = cfg.NOTION_API_KEY || '';
           const notionPageInput = document.getElementById('setting-notion-page-id');
@@ -11040,6 +11182,7 @@
         AUTO_RUN_OCR: document.getElementById('toggle-auto-ocr').classList.contains('active'),
         GEMINI_NOTES_API_KEY: ((document.getElementById('setting-gemini-notes-key')?.value || '').trim()) || ((document.getElementById('setting-gemini-chat-key')?.value || '').trim()),
         GEMINI_CHAT_API_KEY: ((document.getElementById('setting-gemini-chat-key')?.value || '').trim()) || ((document.getElementById('setting-gemini-notes-key')?.value || '').trim()),
+        GEMINI_SPARE_API_KEY: (document.getElementById('setting-gemini-spare-key')?.value || '').trim(),
         GEMINI_API_KEY: ((document.getElementById('setting-gemini-notes-key')?.value || '').trim()) || ((document.getElementById('setting-gemini-chat-key')?.value || '').trim()),
         NOTION_API_KEY: (document.getElementById('setting-notion-key')?.value || '').trim(),
         NOTION_PAGE_ID: (document.getElementById('setting-notion-page-id')?.value || '').trim(),
@@ -11284,10 +11427,13 @@
           if (cfg.LECTURES_DIR) document.getElementById('onboard-lectures-dir').value = cfg.LECTURES_DIR;
           const notesKey = cfg.GEMINI_NOTES_API_KEY || cfg.GEMINI_API_KEY || '';
           const chatKey = cfg.GEMINI_CHAT_API_KEY || cfg.GEMINI_API_KEY || '';
+          const spareKey = cfg.GEMINI_SPARE_API_KEY || cfg.gemini_spare_api_key || '';
           const onboardNotesInput = document.getElementById('onboard-gemini-notes-key');
           const onboardChatInput = document.getElementById('onboard-gemini-chat-key');
+          const onboardSpareInput = document.getElementById('onboard-gemini-spare-key');
           if (onboardNotesInput) onboardNotesInput.value = notesKey;
           if (onboardChatInput) onboardChatInput.value = chatKey;
+          if (onboardSpareInput) onboardSpareInput.value = spareKey;
           if (cfg.NOTION_API_KEY) document.getElementById('onboard-notion-key').value = cfg.NOTION_API_KEY;
           if (cfg.NOTION_PAGE_ID) document.getElementById('onboard-notion-page-id').value = cfg.NOTION_PAGE_ID;
           document.getElementById('onboard-parent-deck').value = cfg.DEFAULT_PARENT_DECK || 'MBBS Year 1';
@@ -11483,7 +11629,8 @@
       const lecturesDir = document.getElementById('onboard-lectures-dir').value.trim();
       const geminiNotesKey = (document.getElementById('onboard-gemini-notes-key')?.value || '').trim();
       const geminiChatKey = (document.getElementById('onboard-gemini-chat-key')?.value || '').trim();
-      const primaryGeminiKey = geminiNotesKey || geminiChatKey;
+      const geminiSpareKey = (document.getElementById('onboard-gemini-spare-key')?.value || '').trim();
+      const primaryGeminiKey = geminiNotesKey || geminiChatKey || geminiSpareKey;
       const notionKey = document.getElementById('onboard-notion-key').value.trim();
       const notionPageId = document.getElementById('onboard-notion-page-id').value.trim();
       const parentDeck = document.getElementById('onboard-parent-deck').value.trim() || 'MBBS Year 1';
@@ -11492,6 +11639,7 @@
         DEFAULT_PARENT_DECK: parentDeck,
         GEMINI_NOTES_API_KEY: geminiNotesKey || primaryGeminiKey,
         GEMINI_CHAT_API_KEY: geminiChatKey || primaryGeminiKey,
+        GEMINI_SPARE_API_KEY: geminiSpareKey,
         GEMINI_API_KEY: primaryGeminiKey,
         NOTION_API_KEY: notionKey,
         NOTION_PAGE_ID: notionPageId,
@@ -11749,7 +11897,7 @@
       latestAppUpdateInfo = info;
       const verBadge = document.getElementById('about-version-badge');
       if (verBadge) {
-        verBadge.innerText = `Version ${info.current_version || '2.3.0'} (v${info.latest_version} available)`;
+        verBadge.innerText = `Version ${info.current_version || '2.3.1'} (v${info.latest_version} available)`;
         verBadge.classList.remove('bg-blue-50', 'text-blue-700');
         verBadge.classList.add('bg-emerald-50', 'text-emerald-700', 'dark:bg-emerald-950/40', 'dark:text-emerald-300');
       }
@@ -11790,7 +11938,7 @@
             handleAppUpdateNotification(res);
             if (manual) showToast(`Update found: Synapse v${res.latest_version}`, "success");
           } else if (res && res.checked) {
-            if (manual) showToast(`Synapse is up to date! (v${res.current_version || '2.3.0'})`, "success");
+            if (manual) showToast(`Synapse is up to date! (v${res.current_version || '2.3.1'})`, "success");
           } else if (manual) {
             const errMsg = (res && res.error && String(res.error).trim()) ? String(res.error).trim() : 'Connection timed out or network error';
             showToast(`Could not check for updates: ${errMsg}`, "error");

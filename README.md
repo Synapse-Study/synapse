@@ -8,7 +8,7 @@
 
   <p>
     <a href="https://github.com/Synapse-Study/synapse/releases/latest/download/Synapse.dmg">
-      <img src="https://img.shields.io/badge/Download_for_macOS_(Apple_Silicon)-v2.3.0-2563EB?style=for-the-badge&logo=apple&logoColor=white" alt="Download Synapse for macOS" />
+      <img src="https://img.shields.io/badge/Download_for_macOS_(Apple_Silicon)-v2.3.1-2563EB?style=for-the-badge&logo=apple&logoColor=white" alt="Download Synapse for macOS" />
     </a>
   </p>
 </div>

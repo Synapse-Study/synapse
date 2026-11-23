@@ -116,7 +116,7 @@ _C_EXTENSION_LOCK = threading.Lock()
 # ─────────────────────────────────────────────────────────────────────────────
 # 1. CONSTANTS, PATHS & DEFAULTS
 # ─────────────────────────────────────────────────────────────────────────────
-CURRENT_VERSION = "2.3.0"
+CURRENT_VERSION = "2.3.1"
 GITHUB_REPO = "Synapse-Study/synapse"
 LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 RELEASES_LIST_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases"
@@ -349,6 +349,7 @@ _CONFIG_TEMPLATE: dict = {
     "GEMINI_MODEL":             "gemini-4-hydrogen",
     "GEMINI_NOTES_API_KEY":     "",
     "GEMINI_CHAT_API_KEY":      "",
+    "GEMINI_SPARE_API_KEY":     "",
     "GEMINI_API_KEY":           "",
     "NOTION_API_KEY":           "",
     "NOTION_PAGE_ID":           "",
@@ -373,6 +374,7 @@ _CONFIG_TEMPLATE: dict = {
 _ENV_FALLBACKS: dict = {
     "GEMINI_NOTES_API_KEY": "GEMINI_NOTES_API_KEY",
     "GEMINI_CHAT_API_KEY":  "GEMINI_CHAT_API_KEY",
+    "GEMINI_SPARE_API_KEY": "GEMINI_SPARE_API_KEY",
     "GEMINI_API_KEY":       "GEMINI_API_KEY",
     "NOTION_API_KEY":       "NOTION_API_KEY",
     "NOTION_PAGE_ID":       "NOTION_PAGE_ID",
@@ -519,6 +521,14 @@ class ConfigManager:
              os.environ.get("GEMINI_API_KEY") or "")
         return str(k).strip()
 
+    def get_spare_api_key(self) -> str:
+        """Spare backup Gemini API Key used if Notes or Chat key hits rate limit / quota.
+        Never used on 503 high demand."""
+        k = (self._data.get("GEMINI_SPARE_API_KEY") or 
+             self._data.get("gemini_spare_api_key") or 
+             os.environ.get("GEMINI_SPARE_API_KEY") or "")
+        return str(k).strip()
+
     def get_dismissed_announcements(self) -> list[str]:
         dismissed = self._data.get("DISMISSED_ANNOUNCEMENTS")
         if dismissed is None:
@@ -537,6 +547,25 @@ class ConfigManager:
             self._data["DISMISSED_ANNOUNCEMENTS"] = curr
             self._data["dismissed_announcements"] = curr
             self.save({"DISMISSED_ANNOUNCEMENTS": curr, "dismissed_announcements": curr})
+
+    def get_auto_prep_history(self) -> dict:
+        history = self._data.get("AUTO_PREP_HISTORY", {})
+        if not isinstance(history, dict):
+            history = {}
+        return history
+
+    def record_auto_prep_attempt(self, session_key: str, status: str, error: str = "") -> None:
+        key = str(session_key).strip()
+        if not key:
+            return
+        history = self.get_auto_prep_history()
+        history[key] = {
+            "timestamp": time.time(),
+            "status": status,
+            "error": str(error)[:120]
+        }
+        self._data["AUTO_PREP_HISTORY"] = history
+        self.save({"AUTO_PREP_HISTORY": history})
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 3. ANKICONNECT BRIDGE (Port 8765)
@@ -781,11 +810,23 @@ class SlideRenderEngine:
                     elif HAS_FITZ:
                         self._fitz_doc = fitz.open(str(cache_pdf))
                         self._total_pages = len(self._fitz_doc)
-                    self._recompute_slide_mapping()
-                    print(f"[SlideRenderEngine] Loaded cached slide PDF ({self._total_pages} slides) ✓")
-                    if self._on_ready:
-                        self._on_ready(success=True, message=f"{self._total_pages} slide diagrams loaded from cache")
-                    return
+
+                    # Verify cached PDF matches presentation slide count to prevent stale/cross-lecture cache poisoning
+                    if self._prs and len(self._prs.slides) > 0 and self._total_pages != len(self._prs.slides):
+                        print(f"[SlideRenderEngine] Cached PDF page count ({self._total_pages}) does not match presentation slides ({len(self._prs.slides)}). Discarding mismatched cache...")
+                        self._pdf = None
+                        self._fitz_doc = None
+                        self._total_pages = 0
+                        try:
+                            cache_pdf.unlink(missing_ok=True)
+                        except Exception:
+                            pass
+                    else:
+                        self._recompute_slide_mapping()
+                        print(f"[SlideRenderEngine] Loaded cached slide PDF ({self._total_pages} slides) ✓")
+                        if self._on_ready:
+                            self._on_ready(success=True, message=f"{self._total_pages} slide diagrams loaded from cache")
+                        return
                 except Exception as exc:
                     print(f"[SlideRenderEngine] Failed to open cached PDF: {exc}")
 
@@ -821,14 +862,29 @@ class SlideRenderEngine:
         except Exception:
             pass
 
-        # 1. Try Microsoft PowerPoint AppleScript (exact working script from anki_study_suite.py.bak)
+        # 1. Try Microsoft PowerPoint AppleScript
         try:
+            pptx_res = str(pptx_path.resolve()).replace('"', '\\"')
+            pdf_res = str(out_pdf.resolve()).replace('"', '\\"')
+            doc_name = pptx_path.name.replace('"', '\\"')
             script = f'''
             tell application "Microsoft PowerPoint"
-                open (POSIX file "{pptx_path.resolve()}")
-                set prs to active presentation
-                save prs in (POSIX file "{out_pdf.resolve()}") as save as PDF
-                close prs saving no
+                open (POSIX file "{pptx_res}")
+                set prs to missing value
+                repeat with i from 1 to 50
+                    try
+                        set prs to presentation "{doc_name}"
+                        exit repeat
+                    on error
+                        delay 0.1
+                    end try
+                end repeat
+                if prs is not missing value then
+                    save prs in (POSIX file "{pdf_res}") as save as PDF
+                    close prs saving no
+                else
+                    error "Could not reference presentation {doc_name}"
+                end if
             end tell
             '''
             res = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=90)
@@ -1552,14 +1608,34 @@ class GeminiCardsEngine:
         task_label: str = "Notes",
         restrict_to_flagship: bool = False
     ) -> str:
-        api_key = self._config.get_notes_api_key()
-        if not api_key:
-            raise ValueError("Gemini Notes API Key is not set. Open Settings to configure your key.")
+        notes_key = self._config.get_notes_api_key()
+        chat_key = self._config.get_chat_api_key()
+        spare_key = self._config.get_spare_api_key()
+
+        if "chat" in task_label.lower():
+            primary_key = chat_key or notes_key or spare_key
+            # Spare key is the immediate emergency backup on quota/rate limit!
+            backup_key_1 = spare_key if (spare_key and spare_key != primary_key) else ""
+            backup_key_2 = notes_key if (notes_key and notes_key not in (primary_key, backup_key_1)) else ""
+        else:
+            primary_key = notes_key or chat_key or spare_key
+            # Spare key is the immediate emergency backup on quota/rate limit!
+            backup_key_1 = spare_key if (spare_key and spare_key != primary_key) else ""
+            backup_key_2 = chat_key if (chat_key and chat_key not in (primary_key, backup_key_1)) else ""
+
+        if not primary_key:
+            raise ValueError("Gemini API Key is not set. Open Settings to configure your key.")
+
+        api_keys_pool = [primary_key]
+        if backup_key_1:
+            api_keys_pool.append(backup_key_1)
+        if backup_key_2:
+            api_keys_pool.append(backup_key_2)
 
         configured_model = (self._config.get("GEMINI_MODEL", "gemini-4-hydrogen") or "gemini-4-hydrogen").strip()
         model = (preferred_model or configured_model).strip()
-        masked = mask_api_key(api_key)
-        print(f"[Gemini {task_label}] Request initiated | Key: Notes Key ({masked}) | Target Model: {model} | Flagship Only: {restrict_to_flagship}")
+        masked = mask_api_key(primary_key)
+        print(f"[Gemini {task_label}] Request initiated | Primary Key: ({masked}) | Keys Available: {len(api_keys_pool)} (Spare configured: {bool(spare_key)}) | Target Model: {model} | Flagship Only: {restrict_to_flagship}")
         
         gen_config = {"temperature": 0.2, "maxOutputTokens": 8192}
         if restrict_to_flagship:
@@ -1577,6 +1653,7 @@ class GeminiCardsEngine:
             cascade = [
                 "gemini-4-hydrogen",
                 "gemini-3.8-flash",
+                "gemini-3.5-flash",
             ]
         elif preferred_model == "gemini-3-flash-preview":
             cascade = [
@@ -1617,18 +1694,30 @@ class GeminiCardsEngine:
                 models_to_try.append(m)
 
         last_error = ""
-        backoff_delays = [2.0, 4.0, 8.0]
         call_timeout = min(timeout, 50)
 
         for idx, attempt_model in enumerate(models_to_try):
-            is_primary = (idx == 0)
-            max_retries = 2 if is_primary else 1
+            if attempt_model in ["gemini-4-hydrogen", "gemini-3.8-flash"] and restrict_to_flagship:
+                payload["generationConfig"]["thinkingConfig"] = {"thinkingBudget": 2048}
+            else:
+                payload["generationConfig"].pop("thinkingConfig", None)
 
-            if status_callback:
-                status_callback(f"Connecting with Notes Key ({masked}) to {attempt_model}...", model=attempt_model)
+            # Try available API keys in order (Primary, then Spare Backup on 429)
+            model_switched = False
+            for k_idx, current_api_key in enumerate(api_keys_pool):
+                cur_masked = mask_api_key(current_api_key)
+                if k_idx == 0:
+                    key_tag = "Primary Key"
+                elif current_api_key == spare_key:
+                    key_tag = "Spare Backup Key"
+                else:
+                    key_tag = "Secondary Key"
 
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/{attempt_model}:generateContent?key={api_key}"
-            for retry in range(max_retries):
+                if status_callback:
+                    status_callback(f"Connecting with {key_tag} ({cur_masked}) to {attempt_model}...", model=attempt_model)
+
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/{attempt_model}:generateContent?key={current_api_key}"
+
                 is_notes = "note" in task_label.lower()
                 is_cards = any(k in task_label.lower() for k in ["card", "flashcard"])
                 if is_notes:
@@ -1674,101 +1763,121 @@ class GeminiCardsEngine:
                                 raise ValueError("Empty response text from model.")
 
                             self.last_model_used = attempt_model
-                            if attempt_model != model:
-                                print(f"[Gemini Notes] Fallback model '{attempt_model}' succeeded with Notes Key ({masked}).")
-                            else:
-                                print(f"[Gemini Notes] Primary model '{model}' succeeded with Notes Key ({masked}).")
+                            print(f"[Gemini Notes] Model '{attempt_model}' succeeded with {key_tag} ({cur_masked}).")
                             return text
                         except Exception as e:
                             raise ValueError(f"Malformed Gemini response ({attempt_model}): {e} | data={data}")
+
                     elif res.status_code == 503:
                         last_error = f"Gemini Error 503 ({attempt_model}): {res.text}"
-                        if restrict_to_flagship:
-                            # Flagship restricted: NEVER downgrade to flash-lite! Cycle between 4-hydrogen & 3.8-flash
-                            alt_idx = (idx + 1) % len(models_to_try)
-                            next_model = models_to_try[alt_idx]
-                            msg = f"⚠️ {attempt_model} flagship slot busy (503). Retrying with {next_model}..."
-                            print(f"[Gemini Notes] {msg}")
-                            if status_callback:
-                                status_callback(msg, model=next_model)
-                            time.sleep(3.0)
-                            continue
-                        # If model is overloaded on Google's servers, fail over immediately to next available model
-                        if not is_primary or retry >= 1:
-                            next_model = models_to_try[idx + 1] if idx + 1 < len(models_to_try) else "next candidate"
+                        # If model is overloaded on Google's servers, fail over immediately to next available model in cascade
+                        if idx + 1 < len(models_to_try):
+                            next_model = models_to_try[idx + 1]
                             msg = f"⚠️ {attempt_model} is experiencing high demand (503). Switching immediately to {next_model}..."
                             print(f"[Gemini Notes] {msg}")
                             if status_callback:
                                 status_callback(msg, model=next_model)
+                            model_switched = True
                             break
-                        wait_time = 2.0
+                        wait_time = 3.0
                         msg = f"{attempt_model} is experiencing high demand (503). Retrying once in {int(wait_time)}s..."
                         print(f"[Gemini Notes] {msg}")
                         if status_callback:
                             status_callback(msg, model=attempt_model)
                         time.sleep(wait_time)
                         continue
+
                     elif res.status_code == 400 and "thinkingConfig" in res.text:
                         payload["generationConfig"].pop("thinkingConfig", None)
                         continue
+
                     elif res.status_code == 429:
                         last_error = f"Gemini Error 429 ({attempt_model}): {res.text}"
+                        # 1. Switch immediately to next API key in pool (Spare Backup Key, then Secondary Key)
+                        if k_idx + 1 < len(api_keys_pool):
+                            next_key = api_keys_pool[k_idx + 1]
+                            next_tag = "Spare Backup Key" if next_key == spare_key else "Secondary Key"
+                            next_masked = mask_api_key(next_key)
+                            msg = f"⚠️ {key_tag} rate-limited (429). Switching immediately to {next_tag} ({next_masked})..."
+                            print(f"[Gemini Notes] {msg}")
+                            if status_callback:
+                                status_callback(msg, model=attempt_model)
+                            continue
+
+                        # 2. All keys exhausted on this model or only 1 key available
                         is_daily_limit = any(term in res.text for term in [
                             "limit: 20",
                             "requests per day limit exceeded",
                             "GenerateRequestsPerDay",
-                            "generate_content_free_tier_requests"
+                            "generate_content_free_tier_requests",
+                            "resource_exhausted",
+                            "quota exceeded"
                         ])
+
                         if is_daily_limit:
-                            next_model = models_to_try[idx + 1] if idx + 1 < len(models_to_try) else "next candidate"
-                            msg = f"⚠️ {attempt_model} Free Tier daily limit reached (20 req/day). Switching to {next_model}..."
-                            print(f"[Gemini Notes] {msg}")
-                            if status_callback:
-                                status_callback(msg, model=next_model)
-                            break
+                            if idx + 1 < len(models_to_try):
+                                next_model = models_to_try[idx + 1]
+                                msg = f"⚠️ {attempt_model} Free Tier daily limit reached (20 req/day). Switching to {next_model}..."
+                                print(f"[Gemini Notes] {msg}")
+                                if status_callback:
+                                    status_callback(msg, model=next_model)
+                                model_switched = True
+                                break
+                            else:
+                                raise ValueError("Gemini daily limit reached (20 req/day). Please wait for daily reset or use an alternative key.")
 
                         # Extract retryDelay if returned by Gemini (e.g. "30s" or "30.415673054s")
                         retry_delay_match = re.search(r'"retryDelay":\s*"(\d+(?:\.\d+)?)s?"', res.text)
-                        if retry_delay_match:
-                            wait_time = float(retry_delay_match.group(1)) + 1.0
-                        else:
-                            wait_time = backoff_delays[min(retry, len(backoff_delays) - 1)]
+                        wait_time = float(retry_delay_match.group(1)) + 1.0 if retry_delay_match else 60.0
 
-                        # If rate limit wait is long and we have fallback models, switch immediately
-                        if wait_time > 8.0 and idx + 1 < len(models_to_try):
+                        if idx + 1 < len(models_to_try):
                             next_model = models_to_try[idx + 1]
-                            msg = f"⚠️ {attempt_model} rate-limited ({int(wait_time)}s reset). Switching immediately to {next_model}..."
+                            msg = f"⚠️ {attempt_model} rate-limited ({int(wait_time)}s reset). Switching to {next_model}..."
                             print(f"[Gemini Notes] {msg}")
                             if status_callback:
                                 status_callback(msg, model=next_model)
+                            model_switched = True
                             break
 
-                        msg = f"{attempt_model} rate-limited. Pausing {int(wait_time)}s (attempt {retry + 1}/{max_retries})..."
+                        if wait_time > 60.0:
+                            raise ValueError("Rate limit reached—wait 60 seconds and try again.")
+
+                        msg = f"{attempt_model} rate-limited. Respectful backoff for {int(wait_time)}s..."
                         print(f"[Gemini Notes] {msg}")
                         if status_callback:
                             status_callback(msg, model=attempt_model)
-                        time.sleep(wait_time)
-                        continue
+                        time.sleep(min(wait_time, 60.0))
+                        break
+
                     elif res.status_code == 404:
                         last_error = f"Gemini Error 404: {attempt_model} not found on v1beta API"
                         print(f"[Gemini] {attempt_model} returned 404 Not Found. Skipping to next model in cascade...")
+                        model_switched = True
                         break
                     else:
                         last_error = f"Gemini API Error {res.status_code} ({attempt_model}): {res.text}"
                         print(f"[Gemini] {attempt_model} returned {res.status_code}. Trying next candidate...")
+                        model_switched = True
                         break
+
                 except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as exc:
                     last_error = f"Timeout/Connection Error ({attempt_model}): {exc}"
-                    next_model = models_to_try[idx + 1] if idx + 1 < len(models_to_try) else "next candidate"
-                    msg = f"⚠️ {attempt_model} connection timed out. Failing over to {next_model}..."
-                    print(f"[Gemini Notes] {msg}")
-                    if status_callback:
-                        status_callback(msg, model=next_model)
-                    break
+                    if idx + 1 < len(models_to_try):
+                        next_model = models_to_try[idx + 1]
+                        msg = f"⚠️ {attempt_model} connection timed out. Failing over to {next_model}..."
+                        print(f"[Gemini Notes] {msg}")
+                        if status_callback:
+                            status_callback(msg, model=next_model)
+                        model_switched = True
+                        break
                 except Exception as exc:
+                    if isinstance(exc, (ValueError, InterruptedError)):
+                        raise
                     last_error = f"{type(exc).__name__}: {exc}"
-                    time.sleep(1.0)
-                    continue
+                    break
+
+            if model_switched:
+                continue
 
         raise ValueError(last_error or "Gemini API failed after retries.")
 
@@ -2069,7 +2178,7 @@ class GeminiNotesEngine:
                 s_str += f"Speaker Notes:\n{s['notes']}\n"
         return s_str
 
-    def generate_lecture_notes(self, prs: Presentation, lecture_name: str, status_callback: Optional[Any] = None) -> tuple[str, str]:
+    def generate_lecture_notes(self, prs: Presentation, lecture_name: str, status_callback: Optional[Any] = None, preferred_model: str = "gemini-4-hydrogen") -> tuple[str, str]:
         if not prs:
             raise ValueError("No presentation loaded to generate notes from.")
 
@@ -2261,7 +2370,7 @@ PART 1 EXECUTION RULES:
                 prompt_pass1,
                 timeout=180,
                 status_callback=status_callback,
-                preferred_model="gemini-4-hydrogen",
+                preferred_model=preferred_model,
                 task_label="Notes Part 1/2",
                 restrict_to_flagship=True
             ).strip()
@@ -2284,9 +2393,15 @@ PART 1 EXECUTION RULES:
             covered_headings = re.findall(r"(?:<b><u>|<u>Topic:)(.*?)(?:</u>|</u></b>|:)", notes_part1)
             part1_outline = ", ".join(h.strip() for h in covered_headings[:8] if h.strip()) or f"Slides 1 to {half_idx}"
 
+            # Respectful 5-second cooldown between Pass 1 and Pass 2 to keep within Free Tier Tokens-Per-Minute (TPM) ceiling
+            if status_callback:
+                status_callback("Pass 1 complete. Pausing 5s for token rate-limit safety...", model=preferred_model)
+            print("[Gemini Notes] Cooldown: Pausing 5s between Pass 1 and Pass 2 to protect TPM quota...")
+            time.sleep(5.0)
+
             # ── PASS 2: Slides (N//2)+1 to N (Carrying Forward Context) ──
             if status_callback:
-                status_callback(f"Generating Part 2/2: Slides {half_idx + 1}–{total_slides_count}...", model="gemini-4-hydrogen")
+                status_callback(f"Generating Part 2/2: Slides {half_idx + 1}–{total_slides_count}...", model=preferred_model)
 
             prompt_pass2 = f"""You are the student's personal medical study partner writing high-yield lecture notes for King's College London MBBS Year 1.
 Your task is to continue generating comprehensive lecture notes for the second half of this lecture, ensuring seamless continuity with Part 1.
@@ -2319,7 +2434,7 @@ PART 2 CONTINUITY RULES:
                 prompt_pass2,
                 timeout=180,
                 status_callback=status_callback,
-                preferred_model="gemini-4-hydrogen",
+                preferred_model=preferred_model,
                 task_label="Notes Part 2/2",
                 restrict_to_flagship=True
             ).strip()
@@ -2367,7 +2482,7 @@ Output ONLY raw markdown text starting with ## 🎯 Learning Objectives. Do not 
             prompt,
             timeout=180,
             status_callback=status_callback,
-            preferred_model="gemini-4-hydrogen",
+            preferred_model=preferred_model,
             task_label="Notes Synthesis",
             restrict_to_flagship=True
         ).strip()
@@ -3152,7 +3267,7 @@ class NotionSyncEngine:
         }
         return table_block, curr_idx
 
-    def markdown_to_notion_blocks(self, md_text: str, prs: Optional[Presentation] = None) -> list[dict]:
+    def markdown_to_notion_blocks(self, md_text: str, prs: Optional[Presentation] = None, diag_dir: Optional[Path] = None, pptx_path: Optional[Path] = None) -> list[dict]:
         lines = md_text.split("\n")
         blocks = []
         seen_image_hashes: set[str] = set()
@@ -3226,7 +3341,18 @@ class NotionSyncEngine:
 
                 pushed_any_img = False
                 for s_num in slide_nums:
-                    img_blob = self.get_best_slide_image(prs, s_num)
+                    img_blob = None
+                    # 1. Prefer verified note diagram already saved and previewed on disk
+                    if diag_dir:
+                        diag_file = diag_dir / f"slide_{s_num}.png"
+                        if diag_file.exists():
+                            try:
+                                img_blob = diag_file.read_bytes()
+                            except Exception as read_err:
+                                print(f"[markdown_to_notion_blocks] Error reading cached diagram {diag_file}: {read_err}")
+                    # 2. Otherwise extract from presentation
+                    if not img_blob:
+                        img_blob = self.get_best_slide_image(prs, s_num, pptx_path=pptx_path)
                     if img_blob:
                         img_hash = hashlib.md5(img_blob).hexdigest()
                         # Only skip if the exact rendered diagram was already uploaded in this note
@@ -3317,7 +3443,7 @@ class NotionSyncEngine:
             i += 1
         return blocks
 
-    def push_notes(self, lecture_name: str, md_notes: str, prs: Optional[Presentation] = None, target_page_id: str = "") -> dict:
+    def push_notes(self, lecture_name: str, md_notes: str, prs: Optional[Presentation] = None, target_page_id: str = "", diag_dir: Optional[Path] = None, pptx_path: Optional[Path] = None) -> dict:
         headers = self._get_headers()
         page_info = self.search_session_page(lecture_name, target_page_id=target_page_id)
         if not page_info:
@@ -3330,7 +3456,7 @@ class NotionSyncEngine:
             }
 
         page_id = page_info["id"]
-        blocks = self.markdown_to_notion_blocks(md_notes, prs)
+        blocks = self.markdown_to_notion_blocks(md_notes, prs, diag_dir=diag_dir, pptx_path=pptx_path)
         if not blocks:
             return {"success": False, "error": "No content blocks to push."}
 
@@ -4279,9 +4405,19 @@ class GeminiChatbotEngine:
         return False, self._get_banter_response()
 
     def chat(self, message: str, scope: str = "slide", lecture_path: str = "", slide_idx: int = -1, history: list = None, block: str = "", mode: str = "quick") -> dict:
-        api_key = self._config.get_chat_api_key()
-        if not api_key:
+        notes_key = self._config.get_notes_api_key()
+        chat_key = self._config.get_chat_api_key()
+        spare_key = self._config.get_spare_api_key()
+
+        primary_key = chat_key or spare_key or notes_key
+        if not primary_key:
             return {"success": False, "error": "Gemini AI Tutor API Key is missing. Open Settings to set it."}
+
+        api_keys_pool = [primary_key]
+        if spare_key and spare_key not in api_keys_pool:
+            api_keys_pool.append(spare_key)
+        if notes_key and notes_key not in api_keys_pool:
+            api_keys_pool.append(notes_key)
 
         mode = (mode or "quick").lower().strip()
         lower_msg = (message or "").lower()
@@ -4523,9 +4659,16 @@ class GeminiChatbotEngine:
         last_error = ""
         for idx, attempt_model in enumerate(models_to_try):
             is_primary = (idx == 0)
-            max_retries = 3 if is_primary else 2
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/{attempt_model}:generateContent?key={api_key}"
-            for retry in range(max_retries):
+            for k_idx, current_api_key in enumerate(api_keys_pool):
+                cur_masked = mask_api_key(current_api_key)
+                if current_api_key == chat_key:
+                    key_tag = "AI Tutor Key"
+                elif current_api_key == spare_key:
+                    key_tag = "Spare Backup Key"
+                else:
+                    key_tag = "Lecture Notes Key"
+
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/{attempt_model}:generateContent?key={current_api_key}"
                 try:
                     resp = requests.post(url, json=payload, timeout=90)
                     if resp.status_code == 200:
@@ -4564,10 +4707,10 @@ class GeminiChatbotEngine:
                             except Exception:
                                 truncated = True
 
-                        if attempt_model != primary_model:
-                            print(f"[Gemini Chat / AI Tutor] Fallback model '{attempt_model}' succeeded with AI Tutor Key ({masked}).")
+                        if attempt_model != primary_model or current_api_key != primary_key:
+                            print(f"[Gemini Chat / AI Tutor] Model '{attempt_model}' succeeded with {key_tag} ({cur_masked}).")
                         else:
-                            print(f"[Gemini Chat / AI Tutor] Primary model '{primary_model}' succeeded with AI Tutor Key ({masked}).")
+                            print(f"[Gemini Chat / AI Tutor] Primary model '{primary_model}' succeeded with {key_tag} ({cur_masked}).")
 
                         return {
                             "success": True,
@@ -4581,33 +4724,20 @@ class GeminiChatbotEngine:
                         }
                     elif resp.status_code == 503:
                         last_error = f"Gemini Error 503 ({attempt_model}): {resp.text}"
-                        wait_sec = 2.5 * (retry + 1)
-                        if retry < max_retries - 1:
-                            print(f"[Gemini Chat / AI Tutor] {attempt_model} experiencing high demand (503). Retrying in {wait_sec}s (attempt {retry + 1}/{max_retries}) [AI Tutor Key: {masked}]...")
-                            time.sleep(wait_sec)
-                            continue
-                        else:
-                            print(f"[Gemini Chat / AI Tutor] {attempt_model} high demand retries exhausted. Cascading to next candidate...")
-                            break
+                        print(f"[Gemini Chat / AI Tutor] {attempt_model} experiencing high demand (503). Retaining key and cascading to next candidate...")
+                        # STRICT USER RULE: On 503 high demand, do NOT switch to the spare key (outcome will be identical). Retain key and cascade models!
+                        break
                     elif resp.status_code == 429:
                         last_error = f"Gemini Error 429 ({attempt_model}): {resp.text}"
-                        is_daily_limit = any(term in resp.text for term in [
-                            "limit: 20",
-                            "requests per day limit exceeded",
-                            "GenerateRequestsPerDay",
-                            "generate_content_free_tier_requests"
-                        ])
-                        if is_daily_limit:
-                            print(f"[Gemini Chat / AI Tutor] ⚠️ {attempt_model} daily quota exhausted (20 req/day). Cascading to next candidate [AI Tutor Key: {masked}]...")
-                            break
-
-                        wait_sec = 2.0 * (retry + 1)
-                        if retry < max_retries - 1:
-                            print(f"[Gemini Chat / AI Tutor] {attempt_model} rate-limited (429). Retrying in {wait_sec}s (attempt {retry + 1}/{max_retries}) [AI Tutor Key: {masked}]...")
-                            time.sleep(wait_sec)
+                        # If a spare/backup key is available in the pool, switch immediately!
+                        if k_idx + 1 < len(api_keys_pool):
+                            next_key = api_keys_pool[k_idx + 1]
+                            next_tag = "Spare Backup Key" if next_key == spare_key else "Lecture Notes Key"
+                            next_masked = mask_api_key(next_key)
+                            print(f"[Gemini Chat / AI Tutor] ⚠️ {key_tag} rate-limited (429). Switching immediately to {next_tag} ({next_masked})...")
                             continue
                         else:
-                            print(f"[Gemini Chat / AI Tutor] {attempt_model} rate-limit retries exhausted. Cascading to next candidate...")
+                            print(f"[Gemini Chat / AI Tutor] All available keys hit rate limit on {attempt_model}. Cascading to next candidate...")
                             break
                     elif resp.status_code == 404:
                         last_error = f"Gemini Error 404: {attempt_model} not found on v1beta API"
@@ -4619,8 +4749,7 @@ class GeminiChatbotEngine:
                         break
                 except Exception as exc:
                     last_error = f"{type(exc).__name__}: {exc}"
-                    time.sleep(1.5)
-                    continue
+                    break
 
         return {"success": False, "error": last_error}
 
@@ -4885,11 +5014,16 @@ class KCLTimetableManager:
         non_lecture_indicators = [
             "self-study", "self study", "e-learning", "keats", "scenario",
             "workshop", "tutorial", "dissection", "clinical skill", "anatomy lab",
-            "practical", "assessment", "case based discussion", "symposium"
+            "practical", "assessment", "case based discussion", "symposium",
+            "aspire", "asp/"
         ]
         for term in non_lecture_indicators:
             if term in act_low or term in title_low or term in sum_low:
                 return False
+
+        # Exclude Aspire series and ASP lectures (enrichment sessions, non-examinable)
+        if re.search(r"\b(asp|aspire)\b", f"{title_low} {sum_low} {act_low}"):
+            return False
 
         if "dissecting" in loc_low or "anatomy lab" in loc_low:
             return False
@@ -5457,7 +5591,7 @@ class InAppNotesManager:
 
         return "General", "General"
 
-    def save_note(self, title: str, content: str, module: str = "", block: str = "", source_file: str = "", note_id: str = "") -> dict:
+    def save_note(self, title: str, content: str, module: str = "", block: str = "", source_file: str = "", note_id: str = "", model: str = "") -> dict:
         self._ensure_storage()
         now_iso = datetime.now().isoformat()
         index_data = self._load_index()
@@ -5513,6 +5647,8 @@ class InAppNotesManager:
             md_file = blk_folder / f"{slug}.md"
             json_file = blk_folder / f"{slug}.json"
 
+        model_name = model or (existing.get("model") if existing else "") or "gemini-4-hydrogen"
+
         note_meta = {
             "id": slug,
             "title": clean_title,
@@ -5521,6 +5657,7 @@ class InAppNotesManager:
             "block": block,
             "block_name": blk_name,
             "source_file": source_file,
+            "model": model_name,
             "created_at": created_at,
             "updated_at": now_iso,
             "word_count": word_count,
@@ -6076,18 +6213,51 @@ class AppAPI:
         tomorrow_data = self._timetable_manager.get_sessions_for_view("tomorrow")
         all_sessions = (today_data.get("sessions") or []) + (tomorrow_data.get("sessions") or [])
 
+        history = self._config.get_auto_prep_history()
+        lectures_prepared_this_run = 0
+
         for s in all_sessions:
+            if lectures_prepared_this_run >= 2:
+                print("[AutoPrepareNotes] Reached maximum cap of 2 lectures for this auto-prepare run. Yielding until next cycle.")
+                break
+
             if self._is_user_busy():
                 print("[AutoPrepareNotes] User activity detected; yielding background pre-generation.")
                 return
 
-            # Strictly only auto-generate notes for actual lectures (skip Self-Study, Workshops, Dissections, etc.)
+            # Strictly only auto-generate notes for actual lectures (skip Self-Study, Workshops, Dissections, Aspire/ASP, etc.)
             if not s.get("is_lecture", False):
                 continue
+
+            s_combined = f"{s.get('clean_title', '')} {s.get('raw_summary', '')} {s.get('code', '')} {s.get('lec_code', '')}".lower()
+            if "aspire" in s_combined or re.search(r"\b(asp|asp\d+)\b", s_combined):
+                continue
+
+            # Skip concluded sessions from earlier today (strictly auto-prep upcoming sessions)
+            now_dt = datetime.now()
+            s_date = s.get("date")
+            end_time = s.get("end_time")
+            if s_date == now_dt.strftime("%Y-%m-%d") and end_time:
+                try:
+                    if end_time <= now_dt.strftime("%H:%M"):
+                        continue
+                except Exception:
+                    pass
 
             session_key = (s.get("code") or s.get("lec_code") or s.get("clean_title") or s.get("raw_summary") or "").strip()
             if not session_key:
                 continue
+
+            # Check 4-hour per-lecture cooldown on past failures (due to 429, 503, etc.)
+            past_record = history.get(session_key)
+            if past_record:
+                last_time = past_record.get("timestamp", 0)
+                last_status = past_record.get("status", "")
+                elapsed = time.time() - last_time
+                if last_status in ("failed", "quota_exhausted", "error") and elapsed < 4 * 3600:
+                    remaining_min = int((4 * 3600 - elapsed) / 60)
+                    print(f"[AutoPrepareNotes] Skipping '{session_key}' - 4-hour per-lecture cooldown active ({remaining_min}m remaining after previous {last_status}).")
+                    continue
 
             if self._find_saved_note_for_session(s):
                 self._auto_prep_status[session_key] = {"status": "ready", "message": "Notes Ready"}
@@ -6152,7 +6322,8 @@ class AppAPI:
                 notes, model_used = self._notes_engine.generate_lecture_notes(
                     prs,
                     lec_title,
-                    status_callback=_bg_status_check
+                    status_callback=_bg_status_check,
+                    preferred_model="gemini-3.5-flash"
                 )
 
                 if self._is_user_busy():
@@ -6165,7 +6336,8 @@ class AppAPI:
                     content=notes,
                     module=mod,
                     block=blk,
-                    source_file=f_path.name
+                    source_file=f_path.name,
+                    model=model_used
                 )
 
                 if save_res.get("success"):
@@ -6186,6 +6358,7 @@ class AppAPI:
                         except Exception:
                             pass
 
+                    self._config.record_auto_prep_attempt(session_key, status="ready")
                     self._auto_prep_status[session_key] = {"status": "ready", "message": "Notes Ready"}
                     print(f"[AutoPrepareNotes] Notes ready for '{lec_title}' saved to {mod} · {blk} ✓")
                     self._notify_frontend("timetable-update", {
@@ -6197,7 +6370,10 @@ class AppAPI:
                         "type": "success",
                         "message": f"Auto-Prep: Notes ready for '{lec_title}' 🩺✓"
                     })
-                    time.sleep(15)  # Pace between lectures
+                    lectures_prepared_this_run += 1
+                    if lectures_prepared_this_run < 2:
+                        print("[AutoPrepareNotes] Pausing 30 seconds before next lecture to prevent TPM/RPM limits from tripping...")
+                        time.sleep(30)
             except InterruptedError:
                 print(f"[AutoPrepareNotes] Yielded generation for '{lec_title}' due to user activity.")
                 self._auto_prep_attempts[session_key] = max(0, attempts)
@@ -6208,16 +6384,22 @@ class AppAPI:
                 is_quota = any(q in err_str.lower() for q in [
                     "quota exceeded", "resource_exhausted", "429", "requests per day", "rate limit"
                 ])
+                # Record in persistent history to enforce 4-hour per-lecture cooldown
+                self._config.record_auto_prep_attempt(
+                    session_key,
+                    status="quota_exhausted" if is_quota else "failed",
+                    error=err_str
+                )
                 if is_quota:
-                    self._auto_prep_quota_exhausted_until = time.time() + (8 * 3600)
+                    self._auto_prep_quota_exhausted_until = time.time() + (4 * 3600)
                     self._auto_prep_status[session_key] = {
                         "status": "quota_exhausted",
-                        "message": "Daily Gemini quota (20 req/day) exhausted. Resumes tomorrow."
+                        "message": "Daily Gemini quota (20 req/day) exhausted. Resumes in 4h."
                     }
                     self._notify_frontend("auto-prepare-update", self.get_auto_prepare_status())
                     self._notify_frontend("app-status", {
                         "type": "warning",
-                        "message": "Auto-Prep: Gemini daily limit reached (20 req/day). Pausing until tomorrow."
+                        "message": "Auto-Prep: Gemini rate/quota limit reached. Pausing for 4 hours."
                     })
                     return
                 else:
@@ -7855,7 +8037,8 @@ Return a strictly valid JSON object matching this schema:
                     content=notes,
                     module=mod,
                     block=blk,
-                    source_file=self.state.pptx_path.name if self.state.pptx_path else ""
+                    source_file=self.state.pptx_path.name if self.state.pptx_path else "",
+                    model=model_used
                 )
                 if save_res.get("success"):
                     in_app_info = save_res
@@ -8095,24 +8278,79 @@ Return a strictly valid JSON object matching this schema:
 
         return {"success": True, "diagrams": res}
 
-    def push_notes_to_notion(self, md_notes: str, target_page_id: str = "") -> dict:
-        lec_name = self.state.current_lecture_name or (self.state.pptx_path.stem if self.state.pptx_path else "")
+    def push_notes_to_notion(self, md_notes: str, target_page_id: str = "", note_id: str = "") -> dict:
+        lec_name = ""
+        prs = None
+        prs_path = None
+        diag_dir = None
+
+        if note_id:
+            note_info = self._in_app_notes_manager.get_note(note_id)
+            if note_info.get("success") and note_info.get("note"):
+                note_data = note_info["note"]
+                lec_name = (note_data.get("title") or "").strip()
+                diag_dir = self._in_app_notes_manager.get_diagrams_dir(
+                    note_id,
+                    note_data.get("module", ""),
+                    note_data.get("block", ""),
+                    note_data.get("md_path", "")
+                )
+            note_prs, note_prs_path = self._find_presentation_for_note(note_id)
+            if note_prs:
+                prs = note_prs
+                prs_path = note_prs_path
+
+        # If diag_dir or prs not yet resolved, infer from in-app notes index by title/content
+        if not diag_dir or not prs:
+            for nid, n in self._in_app_notes_manager._load_index().get("notes", {}).items():
+                n_title = (n.get("title") or "").lower().strip()
+                if n_title and (n_title in md_notes.lower()[:400] or (lec_name and n_title == lec_name.lower())):
+                    if not diag_dir:
+                        diag_dir = self._in_app_notes_manager.get_diagrams_dir(
+                            nid, n.get("module", ""), n.get("block", ""), n.get("md_path", "")
+                        )
+                    if not lec_name:
+                        lec_name = n.get("title", "")
+                    if not prs:
+                        note_prs, note_prs_path = self._find_presentation_for_note(nid)
+                        if note_prs:
+                            prs = note_prs
+                            prs_path = note_prs_path
+                    break
+
+        if not prs:
+            prs = self.state.presentation
+            prs_path = self.state.pptx_path
+
+        if not lec_name:
+            lec_name = self.state.current_lecture_name or (self.state.pptx_path.stem if self.state.pptx_path else "")
+
         if not lec_name and not target_page_id:
-            return {"success": False, "error": "No active lecture selected. Please open a presentation first."}
+            return {"success": False, "error": "No active lecture selected. Please open a presentation or note first."}
         try:
             return self._notion_engine.push_notes(
                 lec_name,
                 md_notes,
-                self.state.presentation,
-                target_page_id=target_page_id
+                prs,
+                target_page_id=target_page_id,
+                diag_dir=diag_dir,
+                pptx_path=prs_path
             )
         except Exception as exc:
             return {"success": False, "error": str(exc)}
 
-    def detect_notion_target_page(self) -> dict:
-        lec_name = self.state.current_lecture_name or (self.state.pptx_path.stem if self.state.pptx_path else "")
+    def detect_notion_target_page(self, note_title: str = "", note_id: str = "") -> dict:
+        lec_name = (note_title or "").strip()
+        if not lec_name and note_id:
+            note_info = self._in_app_notes_manager.get_note(note_id)
+            if note_info.get("success") and note_info.get("note"):
+                lec_name = (note_info["note"].get("title") or "").strip()
+
         if not lec_name:
-            return {"success": False, "error": "No active lecture selected. Please open a presentation first."}
+            lec_name = self.state.current_lecture_name or (self.state.pptx_path.stem if self.state.pptx_path else "")
+
+        if not lec_name:
+            return {"success": False, "error": "No active lecture or note selected."}
         try:
             match = self._notion_engine.search_session_page(lec_name)
             if not match:

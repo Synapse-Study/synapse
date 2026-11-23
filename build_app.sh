@@ -126,6 +126,9 @@ else
     # Clean any .DS_Store files from app bundle before signing
     find "dist/Synapse.app" -name ".DS_Store" -delete 2>/dev/null || true
 
+    # Update CFBundleShortVersionString in Info.plist
+    plutil -replace CFBundleShortVersionString -string "2.3.1" "dist/Synapse.app/Contents/Info.plist" 2>/dev/null || true
+
     # 8.1 Re-sign app bundle ad-hoc to fix code signatures invalidated by post-build copies
     echo "Signing dist/Synapse.app bundle ad-hoc..."
     codesign --force --deep --sign - "dist/Synapse.app"
@@ -200,12 +203,20 @@ hdiutil create \
 
 rm -rf "$DMG_STAGING"
 
-# Sign the DMG container ad-hoc
+# Sign the DMG container ad-hoc and verify
 echo "Signing dist/Synapse.dmg..."
-codesign --force --sign - "dist/Synapse.dmg" 2>/dev/null || true
+codesign --force --sign - "dist/Synapse.dmg"
+echo "Verifying code signature of dist/Synapse.dmg..."
+codesign -vvv --strict "dist/Synapse.dmg"
+
+# Mirror to root directory for easy access
+cp "dist/Synapse.dmg" "$ROOT_DIR/Synapse.dmg"
+rm -rf "$ROOT_DIR/Synapse.app" && cp -R "dist/Synapse.app" "$ROOT_DIR/Synapse.app"
 
 echo "=================================================="
-echo " Synapse Build Complete!"
+echo " Synapse Build Complete & Verified!"
 echo " App Bundle: $ROOT_DIR/dist/Synapse.app"
-echo " DMG Image:  $ROOT_DIR/dist/Synapse.dmg"
+echo " DMG Image:  $ROOT_DIR/dist/Synapse.dmg (also at $ROOT_DIR/Synapse.dmg)"
+echo " Signature:  Verified valid on disk (--strict)"
+echo "=================================================="
 echo "=================================================="
