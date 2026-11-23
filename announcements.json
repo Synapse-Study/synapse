@@ -1,6 +1,6 @@
 [
   {
-    "id": "2026-11-update-notice",
+    "id": "v.2.3.1 Update",
     "title": "Add a spare API Key in settings",
     "message": "Create and add a new spare API key to be used in case the other API keys run out",
     "type": "info",
