@@ -24,6 +24,8 @@ Synapse.app/
 Synapse.spec
 .easyocr_models/
 *.dmg
+*.zip
+Synapse-macOS.zip
 PCRS_Saved_Diagrams/
 *Saved_Diagrams/
 *saved_diagrams/

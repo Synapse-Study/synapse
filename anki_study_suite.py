@@ -41,6 +41,7 @@ import uuid
 import base64
 import time
 import shutil
+import tempfile
 import sqlite3
 import webbrowser
 import urllib.request
@@ -109,6 +110,16 @@ try:
 except ImportError:
     HAS_PDFIUM = False
 
+# Try importing Google GenAI SDK (for Gemini Batch API)
+try:
+    from google import genai
+    from google.genai import types as genai_types
+    HAS_GOOGLE_GENAI = True
+except ImportError:
+    HAS_GOOGLE_GENAI = False
+    genai = None
+    genai_types = None
+
 # Global lock to serialize non-thread-safe C-extension operations (PDFium/fitz, PyTorch/EasyOCR, OpenCV)
 # and prevent ARM64 libmalloc heap corruption across worker threads.
 _C_EXTENSION_LOCK = threading.Lock()
@@ -116,7 +127,7 @@ _C_EXTENSION_LOCK = threading.Lock()
 # ─────────────────────────────────────────────────────────────────────────────
 # 1. CONSTANTS, PATHS & DEFAULTS
 # ─────────────────────────────────────────────────────────────────────────────
-CURRENT_VERSION = "2.3.1"
+CURRENT_VERSION = "2.3.2"
 GITHUB_REPO = "Synapse-Study/synapse"
 LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 RELEASES_LIST_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases"
@@ -208,7 +219,9 @@ def check_github_update() -> dict:
                                     "release_name": f"Synapse {tag_name}",
                                     "release_notes": "See GitHub release page for details.",
                                     "html_url": final_url,
-                                    "download_url": f"https://github.com/{GITHUB_REPO}/releases/download/{tag_name}/Synapse.dmg",
+                                    "download_url": f"https://github.com/{GITHUB_REPO}/releases/download/{tag_name}/Synapse-macOS.zip",
+                                    "zip_url": f"https://github.com/{GITHUB_REPO}/releases/download/{tag_name}/Synapse-macOS.zip",
+                                    "dmg_url": f"https://github.com/{GITHUB_REPO}/releases/download/{tag_name}/Synapse.dmg",
                                     "published_at": "",
                                 }
                     except Exception:
@@ -237,14 +250,20 @@ def check_github_update() -> dict:
             curr_ver = parse_version_tuple(CURRENT_VERSION)
             has_update = latest_ver > curr_ver
 
+            zip_url = None
             dmg_url = None
             for asset in data.get("assets", []):
                 name = str(asset.get("name", "")).lower()
-                if name.endswith(".dmg"):
-                    dmg_url = asset.get("browser_download_url")
-                    break
+                b_url = asset.get("browser_download_url")
+                if "macos" in name and name.endswith(".zip"):
+                    zip_url = b_url
+                elif name.endswith(".zip") and not zip_url:
+                    zip_url = b_url
+                elif name.endswith(".dmg") and not dmg_url:
+                    dmg_url = b_url
 
             html_url = data.get("html_url", f"https://github.com/{GITHUB_REPO}/releases/latest")
+            download_url = zip_url or dmg_url or html_url
             return {
                 "checked": True,
                 "update_available": has_update,
@@ -254,7 +273,9 @@ def check_github_update() -> dict:
                 "release_name": data.get("name", tag_name),
                 "release_notes": data.get("body", ""),
                 "html_url": html_url,
-                "download_url": dmg_url or html_url,
+                "download_url": download_url,
+                "zip_url": zip_url or "",
+                "dmg_url": dmg_url or "",
                 "published_at": data.get("published_at", ""),
             }
 
@@ -566,6 +587,14 @@ class ConfigManager:
         }
         self._data["AUTO_PREP_HISTORY"] = history
         self.save({"AUTO_PREP_HISTORY": history})
+
+    def get_active_batch_job(self) -> Optional[dict]:
+        job = self._data.get("ACTIVE_BATCH_JOB", None)
+        return job if isinstance(job, dict) else None
+
+    def set_active_batch_job(self, batch_data: Optional[dict]) -> None:
+        self._data["ACTIVE_BATCH_JOB"] = batch_data
+        self.save({"ACTIVE_BATCH_JOB": batch_data})
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 3. ANKICONNECT BRIDGE (Port 8765)
@@ -1046,6 +1075,54 @@ class SlideParsEngine:
                     pass
 
         return images, "\n".join(text_lines)
+
+    @staticmethod
+    def detect_slide_visuals(slide) -> dict:
+        """
+        Inspect slide shapes comprehensively to detect any visual diagrams, charts,
+        vector drawings, flowcharts, pathways, curves, or embedded pictures.
+        """
+        pic_count = 0
+        group_count = 0
+        chart_count = 0
+        connector_count = 0
+        freeform_count = 0
+        vector_count = 0
+
+        for sh in slide.shapes:
+            st = getattr(sh, "shape_type", None)
+            name = (getattr(sh, "name", "") or "").lower()
+            if st == 13 or "picture" in name or "image" in name:
+                pic_count += 1
+            elif getattr(sh, "has_chart", False) or "chart" in name:
+                chart_count += 1
+            elif st == 6 or "group" in name:
+                group_count += 1
+            elif st == 5 or "freeform" in name or "curve" in name:
+                freeform_count += 1
+            elif st == 9 or "connector" in name or "line" in name or "arrow" in name:
+                connector_count += 1
+            elif st == 1:
+                has_text = getattr(sh, "has_text_frame", False) and len(sh.text_frame.text.strip()) > 0
+                if any(k in name for k in ["arrow", "arc", "oval", "circle", "curve", "rect", "shape"]) or not has_text:
+                    vector_count += 1
+
+        has_diagram = (pic_count > 0 or chart_count > 0 or group_count > 0 or 
+                       freeform_count > 0 or connector_count >= 1 or vector_count >= 2)
+
+        details = []
+        if pic_count: details.append(f"{pic_count} image(s)")
+        if chart_count: details.append(f"{chart_count} chart(s)")
+        if group_count: details.append(f"{group_count} diagram group(s)")
+        if freeform_count: details.append(f"{freeform_count} curve/freeform drawing(s)")
+        if connector_count: details.append(f"{connector_count} flowchart connector(s)/arrow(s)")
+        if vector_count: details.append(f"{vector_count} schematic shape(s)")
+
+        return {
+            "has_diagram": has_diagram,
+            "image_count": pic_count + group_count + chart_count,
+            "summary": ", ".join(details) if details else "None"
+        }
 
     @staticmethod
     def _get_flat_shapes(shapes) -> list:
@@ -1592,6 +1669,8 @@ class OCREngine:
 # 8. GEMINI CARDS ENGINE & NOTES ENGINE
 # ─────────────────────────────────────────────────────────────────────────────
 class GeminiCardsEngine:
+    _last_live_call_times: dict[str, float] = {}
+
     def __init__(self, config: ConfigManager):
         self._config = config
         self.last_model_used = ""
@@ -1606,7 +1685,8 @@ class GeminiCardsEngine:
         status_callback: Optional[Any] = None,
         preferred_model: Optional[str] = None,
         task_label: str = "Notes",
-        restrict_to_flagship: bool = False
+        restrict_to_flagship: bool = False,
+        images: Optional[list[dict]] = None
     ) -> str:
         notes_key = self._config.get_notes_api_key()
         chat_key = self._config.get_chat_api_key()
@@ -1641,8 +1721,23 @@ class GeminiCardsEngine:
         if restrict_to_flagship:
             gen_config["thinkingConfig"] = {"thinkingBudget": 2048}
 
+        parts: list[dict] = [{"text": prompt}]
+        if images:
+            for img_dict in images:
+                if isinstance(img_dict, dict) and "data" in img_dict:
+                    mime = img_dict.get("mime_type", "image/jpeg")
+                    data_b64 = img_dict["data"]
+                    if "," in data_b64:
+                        data_b64 = data_b64.split(",", 1)[1]
+                    parts.append({
+                        "inline_data": {
+                            "mime_type": mime,
+                            "data": data_b64
+                        }
+                    })
+
         payload = {
-            "contents": [{"parts": [{"text": prompt}]}],
+            "contents": [{"parts": parts}],
             "generationConfig": gen_config
         }
 
@@ -1652,8 +1747,7 @@ class GeminiCardsEngine:
         if restrict_to_flagship:
             cascade = [
                 "gemini-4-hydrogen",
-                "gemini-3.8-flash",
-                "gemini-3.5-flash",
+                "gemini-3.8-flash"
             ]
         elif preferred_model == "gemini-3-flash-preview":
             cascade = [
@@ -1729,6 +1823,18 @@ class GeminiCardsEngine:
                 elif getattr(self, "_cancel_requested", False):
                     raise InterruptedError("Generation cancelled by user.")
 
+                # 15-second minimum spacing per API key / model to strictly respect 5 RPM free-tier limit
+                rate_key = f"{current_api_key[-8:]}:{attempt_model}"
+                now = time.time()
+                last_call = GeminiCardsEngine._last_live_call_times.get(rate_key, 0.0)
+                elapsed = now - last_call
+                if elapsed < 15.0:
+                    wait_needed = 15.0 - elapsed
+                    if status_callback:
+                        status_callback(f"Pacing live call ({int(wait_needed) + 1}s to respect 5 RPM limit)...", model=attempt_model)
+                    time.sleep(wait_needed)
+                GeminiCardsEngine._last_live_call_times[rate_key] = time.time()
+
                 try:
                     res = requests.post(url, json=payload, timeout=call_timeout)
                     if res.status_code == 200:
@@ -1799,55 +1905,23 @@ class GeminiCardsEngine:
                             next_tag = "Spare Backup Key" if next_key == spare_key else "Secondary Key"
                             next_masked = mask_api_key(next_key)
                             msg = f"⚠️ {key_tag} rate-limited (429). Switching immediately to {next_tag} ({next_masked})..."
-                            print(f"[Gemini Notes] {msg}")
+                            print(f"[Gemini {task_label}] {msg}")
                             if status_callback:
                                 status_callback(msg, model=attempt_model)
                             continue
 
-                        # 2. All keys exhausted on this model or only 1 key available
-                        is_daily_limit = any(term in res.text for term in [
-                            "limit: 20",
-                            "requests per day limit exceeded",
-                            "GenerateRequestsPerDay",
-                            "generate_content_free_tier_requests",
-                            "resource_exhausted",
-                            "quota exceeded"
-                        ])
-
-                        if is_daily_limit:
-                            if idx + 1 < len(models_to_try):
-                                next_model = models_to_try[idx + 1]
-                                msg = f"⚠️ {attempt_model} Free Tier daily limit reached (20 req/day). Switching to {next_model}..."
-                                print(f"[Gemini Notes] {msg}")
-                                if status_callback:
-                                    status_callback(msg, model=next_model)
-                                model_switched = True
-                                break
-                            else:
-                                raise ValueError("Gemini daily limit reached (20 req/day). Please wait for daily reset or use an alternative key.")
-
-                        # Extract retryDelay if returned by Gemini (e.g. "30s" or "30.415673054s")
-                        retry_delay_match = re.search(r'"retryDelay":\s*"(\d+(?:\.\d+)?)s?"', res.text)
-                        wait_time = float(retry_delay_match.group(1)) + 1.0 if retry_delay_match else 60.0
-
+                        # 2. All keys exhausted on this model. Try next model in cascade if available
                         if idx + 1 < len(models_to_try):
                             next_model = models_to_try[idx + 1]
-                            msg = f"⚠️ {attempt_model} rate-limited ({int(wait_time)}s reset). Switching to {next_model}..."
-                            print(f"[Gemini Notes] {msg}")
+                            msg = f"⚠️ {attempt_model} rate-limited (429). Switching immediately to {next_model}..."
+                            print(f"[Gemini {task_label}] {msg}")
                             if status_callback:
                                 status_callback(msg, model=next_model)
                             model_switched = True
                             break
 
-                        if wait_time > 60.0:
-                            raise ValueError("Rate limit reached—wait 60 seconds and try again.")
-
-                        msg = f"{attempt_model} rate-limited. Respectful backoff for {int(wait_time)}s..."
-                        print(f"[Gemini Notes] {msg}")
-                        if status_callback:
-                            status_callback(msg, model=attempt_model)
-                        time.sleep(min(wait_time, 60.0))
-                        break
+                        # 3. All keys and models exhausted on 429: stop retrying immediately and raise cooldown notice
+                        raise ValueError("Rate limit reached (429 Too Many Requests). Free-tier cap is 5 RPM. Cooldown active—please wait 60 seconds before requesting another live generation.")
 
                     elif res.status_code == 404:
                         last_error = f"Gemini Error 404: {attempt_model} not found on v1beta API"
@@ -2153,10 +2227,11 @@ Apply the requested changes and output the complete updated JSON array. Return O
         return existing_cards
 
 class GeminiNotesEngine:
-    def __init__(self, state: AppState, config: ConfigManager, cards_engine: "GeminiCardsEngine" = None):
+    def __init__(self, state: AppState, config: ConfigManager, cards_engine: "GeminiCardsEngine" = None, render_engine: Optional["SlideRenderEngine"] = None):
         self._state  = state
         self._config = config
         self._cards_engine = cards_engine
+        self._render_engine = render_engine or getattr(state, "render_engine", None)
 
     def format_slide_notes(self, slide_text: str, slide_num: int) -> str:
         return f"### Slide {slide_num} Key Takeaways\n\n" + "\n".join(f"- {line}" for line in slide_text.split("\n") if line.strip())
@@ -2171,22 +2246,25 @@ class GeminiNotesEngine:
             ])
             s_str += f"\n--- SLIDE {s['slide_num']}: {s['title']} ---\n"
             if s.get("has_diagram") and not is_title_or_admin:
-                s_str += f"[Visual Content: {s['image_count']} diagram/atlas figure(s) on this slide. MANDATORY: Emit '(slide {s['slide_num']}: ...)' marker with caption and narration.]\n"
+                s_str += f"[Visual Content on Slide {s['slide_num']}: {s.get('visual_summary', 'diagram')}. MANDATORY: Emit '(slide {s['slide_num']}: what the diagram/graph shows)' on its own line followed by revision caption. DIAGRAM-DRIVEN: Since this diagram explains the concept, keep accompanying text lean and concise!]\n"
             if s['body']:
                 s_str += f"Slide Text:\n{s['body']}\n"
             if s['notes']:
                 s_str += f"Speaker Notes:\n{s['notes']}\n"
         return s_str
 
-    def generate_lecture_notes(self, prs: Presentation, lecture_name: str, status_callback: Optional[Any] = None, preferred_model: str = "gemini-4-hydrogen") -> tuple[str, str]:
-        if not prs:
-            raise ValueError("No presentation loaded to generate notes from.")
-
-        # Extract all slide text and speaker notes
+    def build_notes_prompt(self, prs: Presentation, lecture_name: str) -> tuple[str, list[dict]]:
+        """
+        Extracts presentation text, syllabus structure, and builds the full MBBS Year 1
+        synthesis prompt compliant with calibrated style rules (verbatim ILOs, sequential coverage,
+        diagram-driven conciseness, brackets for obscure terms, and single slide markers).
+        Returns (prompt, slides_data).
+        """
         slides_data = []
         ilo_text = ""
         for i, slide in enumerate(prs.slides):
             raw_imgs, text = SlideParsEngine.extract_slide_data(slide)
+            vis_info = SlideParsEngine.detect_slide_visuals(slide)
             title = ""
             try:
                 if slide.shapes.title and slide.shapes.title.text:
@@ -2214,8 +2292,9 @@ class GeminiNotesEngine:
                 "title": title,
                 "body": text.strip(),
                 "notes": notes_slide,
-                "has_diagram": len(raw_imgs) > 0,
-                "image_count": len(raw_imgs)
+                "has_diagram": vis_info["has_diagram"] or len(raw_imgs) > 0,
+                "image_count": max(len(raw_imgs), vis_info["image_count"]),
+                "visual_summary": vis_info["summary"]
             })
 
         total_slides_count = len(prs.slides)
@@ -2299,8 +2378,8 @@ Formatting in Notion:
         shared_instructions = f"""
 CRITICAL COMPLETENESS, THEORETICAL RIGOR & DIAGRAM CAPTURE INSTRUCTIONS:
 1. MANDATORY FULL SEQUENTIAL LECTURE COVERAGE (NO SKIPPED SLIDES, NO BRIEF NOTES):
-- You MUST step through the lecture following the exact natural order of the slides.
-- DO NOT collapse multiple distinct slides into a brief 1-line bullet or general overview! Thoroughly cover the medical substance of all slides without skipping.
+- You MUST step through the lecture following the exact natural order of the slides from Slide 2 to the end of the presentation.
+- STRICT PROHIBITION ON SKIPPING SLIDES: NEVER skip content slides (such as intermediate mechanism slides, contractility/inotropy, compensatory mechanisms, or regulatory pathways like slides 17-19 in cardiac output lectures). Every content slide must have its high-yield substance represented in sequence.
 - Extract full medical details: anatomical boundaries, relationships, muscle attachments, neurovascular supply, physiological functions, and clinical correlates.
 - Never write brief high-level summaries. Detailed, complete, and exhaustive for Year 1 MBBS examinations.
 
@@ -2317,144 +2396,25 @@ followed by a 1-line user revision caption on the next line ("what to notice, wh
 - Visual deduplication rule: If consecutive slides repeat the exact same illustration, emit only ONE diagram marker under the section where first introduced.
 - Anchor distinct diagrams individually under their relevant sections.
 
-4. CLINICAL MECHANISMS, CAUSE-AND-EFFECT DEPTH & MEMORY HOOKS:
+4. DIAGRAM-DRIVEN CONCISENESS & VISUAL PRIORITY (CRITICAL USER RULE):
+- If a slide contains a diagram, graph, curve, flowchart, or anatomical schematic that effectively explains a concept, PRIORITIZE THE DIAGRAM.
+- Emit the diagram reference marker: `(slide N: what the diagram/graph shows)` followed by a 1-line user revision caption on the next line.
+- When a diagram explains the concept well, REDUCE ACCOMPANYING TEXT: do NOT generate redundant walls of text describing what is already obvious in the visual. Keep the accompanying text lean, punchy, and limited to key takeaways, critical numbers, or clinical pointers. The diagram carries the information.
+- Mandatory capture for all visual graphs and pathway diagrams: Always capture essential physiological curves (e.g., Frank-Starling / inotropy curves, pressure-volume relationships, heart failure curves, afterload / Guyton curves, coronary blood flow variation traces) and cellular signaling mechanisms (e.g., eNOS / nitric oxide cascade, autonomic / hormonal vascular control). Never omit them.
+
+5. CLINICAL MECHANISMS, CAUSE-AND-EFFECT DEPTH & MEMORY HOOKS:
 - Explain the functional cause-and-effect mechanism for every concept.
 - Include 1-2 punchy memory hooks or mnemonics per major lecture section.
 
-5. COMPLEX WORDS & PHRASES:
+6. COMPLEX WORDS & PHRASES:
 Whenever encountering any complex, technical, or obscure medical/anatomical words or phrases, provide a brief description ~1 to 2 sentences long in brackets `(...)` right after the term explaining what it means in simple English.
 
-6. NOTION STRUCTURE & SPACING:
+7. NOTION STRUCTURE & SPACING:
 - Before each major block (<b><u>Major Block</u></b>), add an empty paragraph, written `<p />` on its own line with a blank line either side.
 - Topic headings inside Notes are underlined plain text (`<u>Topic:</u>`), not ## headings.
 - Use bold `**term:**` for bullet points to highlight key concepts cleanly.
 """
 
-        engine = self._cards_engine or GeminiCardsEngine(self._config)
-
-        # ── 2-PASS CHUNKED SYNTHESIS (FOR DECKS > 12 SLIDES) ───────────────────
-        # Splits long decks into 2 sequential chunks to prevent 503 overload and maintain flagship quality.
-        if total_slides_count > 12:
-            half_idx = total_slides_count // 2
-            slides_part1_str = self._build_slides_summary_str(slides_data[:half_idx])
-            slides_part2_str = self._build_slides_summary_str(slides_data[half_idx:])
-
-            # ── PASS 1: Learning Objectives + Slides 1 to N//2 ──
-            if status_callback:
-                status_callback(f"Generating Part 1/2: Learning Objectives & Slides 1–{half_idx}...", model="gemini-4-hydrogen")
-
-            prompt_pass1 = f"""You are the student's personal medical study partner writing high-yield lecture notes for King's College London MBBS Year 1.
-Your task is to turn these lecture slides into notes that read as if the user wrote them: lean, in their own words, built for revision rather than completeness.
-
-{style_guide_section}
-
-Lecture Title: "{lecture_name}"
-Total Slides in Deck: {total_slides_count}
-GENERATION PHASE: PART 1 OF 2 (Learning Objectives & Slides 1 through {half_idx})
-
-COMPLETE LECTURE SYLLABUS:
-{topics_summary}
-
-Extracted Slide Content for Part 1 (Slides 1 through {half_idx}):
-{slides_part1_str}
-
-{shared_instructions}
-
-PART 1 EXECUTION RULES:
-1. Begin with the complete, unified ## 🎯 Learning Objectives for the ENTIRE lecture (synthesized directly from lecture slides & syllabus).
-2. Follow with ## 📝 Notes covering Slides 1 through {half_idx} in strict sequential order.
-3. Output ONLY raw markdown starting with ## 🎯 Learning Objectives.
-"""
-
-            raw_part1 = engine._call_gemini_rest(
-                prompt_pass1,
-                timeout=180,
-                status_callback=status_callback,
-                preferred_model=preferred_model,
-                task_label="Notes Part 1/2",
-                restrict_to_flagship=True
-            ).strip()
-
-            if getattr(engine, "_notes_cancel_requested", False) or getattr(engine, "_cancel_requested", False):
-                raise InterruptedError("Generation cancelled by user.")
-
-            # Extract unified Learning Objectives from Part 1
-            ilo_match = re.search(r"##\s*(?:🎯\s*)?Learning Objectives(.*?)(?=##\s*(?:📝\s*)?Notes|\Z)", raw_part1, re.DOTALL | re.IGNORECASE)
-            ilo_block = ilo_match.group(1).strip() if ilo_match else (ilo_text or "Understand the anatomical structures, pathways, and physiological mechanisms.")
-
-            # Extract Part 1 Notes body
-            notes_match = re.search(r"##\s*(?:📝\s*)?Notes(.*)", raw_part1, re.DOTALL | re.IGNORECASE)
-            if notes_match:
-                notes_part1 = notes_match.group(1).strip()
-            else:
-                notes_part1 = re.sub(r"^##\s*(?:🎯\s*)?Learning Objectives.*?\n\n", "", raw_part1, flags=re.DOTALL | re.IGNORECASE).strip()
-
-            # Extract covered section headings from Part 1 to provide continuity context for Pass 2
-            covered_headings = re.findall(r"(?:<b><u>|<u>Topic:)(.*?)(?:</u>|</u></b>|:)", notes_part1)
-            part1_outline = ", ".join(h.strip() for h in covered_headings[:8] if h.strip()) or f"Slides 1 to {half_idx}"
-
-            # Respectful 5-second cooldown between Pass 1 and Pass 2 to keep within Free Tier Tokens-Per-Minute (TPM) ceiling
-            if status_callback:
-                status_callback("Pass 1 complete. Pausing 5s for token rate-limit safety...", model=preferred_model)
-            print("[Gemini Notes] Cooldown: Pausing 5s between Pass 1 and Pass 2 to protect TPM quota...")
-            time.sleep(5.0)
-
-            # ── PASS 2: Slides (N//2)+1 to N (Carrying Forward Context) ──
-            if status_callback:
-                status_callback(f"Generating Part 2/2: Slides {half_idx + 1}–{total_slides_count}...", model=preferred_model)
-
-            prompt_pass2 = f"""You are the student's personal medical study partner writing high-yield lecture notes for King's College London MBBS Year 1.
-Your task is to continue generating comprehensive lecture notes for the second half of this lecture, ensuring seamless continuity with Part 1.
-
-{style_guide_section}
-
-Lecture Title: "{lecture_name}"
-Total Slides in Deck: {total_slides_count}
-GENERATION PHASE: PART 2 OF 2 (Slides {half_idx + 1} through {total_slides_count})
-
-ESTABLISHED LECTURE LEARNING OBJECTIVES (from Part 1):
-{ilo_block}
-
-TOPICS ALREADY COVERED IN PART 1 (Slides 1 to {half_idx}):
-{part1_outline}
-
-Extracted Slide Content for Part 2 (Slides {half_idx + 1} through {total_slides_count}):
-{slides_part2_str}
-
-{shared_instructions}
-
-PART 2 CONTINUITY RULES:
-1. STRICTLY DO NOT output `## 🎯 Learning Objectives` or re-state the learning objectives (already established in Part 1).
-2. Continue directly with the Notes body covering Slides {half_idx + 1} through {total_slides_count} in sequential order without skipping.
-3. Maintain the exact same style, clinical depth, `<p />` dividers, `<u>Topic:</u>` headings, bracketed term clarifications `(...)`, and single-slide diagram markers `(slide N: ...)`.
-4. Output raw markdown.
-"""
-
-            raw_part2 = engine._call_gemini_rest(
-                prompt_pass2,
-                timeout=180,
-                status_callback=status_callback,
-                preferred_model=preferred_model,
-                task_label="Notes Part 2/2",
-                restrict_to_flagship=True
-            ).strip()
-
-            if getattr(engine, "_notes_cancel_requested", False) or getattr(engine, "_cancel_requested", False):
-                raise InterruptedError("Generation cancelled by user.")
-
-            # Clean Part 2 body (remove any stray ILO or Notes headers)
-            notes_part2 = re.sub(r"^##\s*(?:🎯\s*)?Learning Objectives.*?(?=##\s*(?:📝\s*)?Notes|\n\n\w|\Z)", "", raw_part2, flags=re.DOTALL | re.IGNORECASE).strip()
-            notes_part2 = re.sub(r"^##\s*(?:📝\s*)?Notes\s*", "", notes_part2, flags=re.IGNORECASE).strip()
-
-            # Merge both parts under a single unified Learning Objectives header and Notes body
-            merged_notes = f"## 🎯 Learning Objectives\n{ilo_block}\n\n## 📝 Notes\n{notes_part1}\n\n<p />\n\n{notes_part2}".strip()
-
-            if not is_custom:
-                merged_notes = re.sub(r"^##\s*(?:🎯\s*)?Learning Objectives", "## 🎯 Learning Objectives", merged_notes, flags=re.MULTILINE | re.IGNORECASE)
-                merged_notes = re.sub(r"^##\s*(?:📝\s*)?Notes", "## 📝 Notes", merged_notes, flags=re.MULTILINE | re.IGNORECASE)
-            return merged_notes, getattr(engine, "last_model_used", "")
-
-        # ── SINGLE-PASS GENERATION (FOR DECKS <= 12 SLIDES) ───────────────────
         slides_summary_str = self._build_slides_summary_str(slides_data)
         prompt = f"""You are the student's personal medical study partner writing high-yield lecture notes for King's College London MBBS Year 1.
 Your task is to turn these lecture slides into notes that read as if the user wrote them: lean, in their own words, built for revision rather than completeness.
@@ -2474,9 +2434,56 @@ Extracted Lecture Content:
 
 Output ONLY raw markdown text starting with ## 🎯 Learning Objectives. Do not wrap in markdown code blocks.
 """
+        return prompt, slides_data
+
+    def generate_lecture_notes(self, prs: Presentation, lecture_name: str, status_callback: Optional[Any] = None, preferred_model: str = "gemini-4-hydrogen") -> tuple[str, str]:
+        if not prs:
+            raise ValueError("No presentation loaded to generate notes from.")
+
+        prompt, slides_data = self.build_notes_prompt(prs, lecture_name)
+
+        # Extract compressed diagram thumbnails for content slides with visuals (up to 16 thumbnails, skipping Slide 1)
+        thumbnails = []
+        render_engine = getattr(self, "_render_engine", None) or getattr(self._state, "render_engine", None)
+        visual_slides = [s for s in slides_data if s["slide_num"] > 1 and s.get("has_diagram")]
+
+        for s in visual_slides[:16]:
+            s_idx = s["slide_num"] - 1
+            pil_img = None
+            if render_engine and render_engine.has_rendered_slide(s_idx):
+                try:
+                    pil_img = render_engine.get_slide_image(s_idx, scale=1.0)
+                except Exception:
+                    pass
+            if pil_img is None:
+                try:
+                    raw_imgs, _ = SlideParsEngine.extract_slide_data(prs.slides[s_idx])
+                    if raw_imgs:
+                        pil_img = raw_imgs[0]
+                except Exception:
+                    pass
+
+            if pil_img:
+                try:
+                    img_copy = pil_img.copy().convert("RGB")
+                    img_copy.thumbnail((768, 432), Image.Resampling.LANCZOS)
+                    buf = io.BytesIO()
+                    img_copy.save(buf, format="JPEG", quality=65, optimize=True)
+                    b64_str = base64.b64encode(buf.getvalue()).decode("ascii")
+                    thumbnails.append({
+                        "mime_type": "image/jpeg",
+                        "data": b64_str,
+                        "slide_num": s["slide_num"],
+                        "title": s["title"]
+                    })
+                except Exception as thumb_err:
+                    print(f"[GeminiNotesEngine] Thumbnail encoding error slide {s['slide_num']}: {thumb_err}")
+
+        engine = self._cards_engine or GeminiCardsEngine(self._config)
 
         if status_callback:
-            status_callback("Synthesizing comprehensive lecture notes...", model="gemini-4-hydrogen")
+            status_msg = f"Synthesizing comprehensive lecture notes ({len(thumbnails)} visual thumbnails attached)..." if thumbnails else "Synthesizing comprehensive lecture notes..."
+            status_callback(status_msg, model=preferred_model)
 
         raw_notes = engine._call_gemini_rest(
             prompt,
@@ -2484,14 +2491,186 @@ Output ONLY raw markdown text starting with ## 🎯 Learning Objectives. Do not 
             status_callback=status_callback,
             preferred_model=preferred_model,
             task_label="Notes Synthesis",
-            restrict_to_flagship=True
+            restrict_to_flagship=True,
+            images=thumbnails
         ).strip()
 
+        style_mode = self._config.get("NOTES_STYLE_MODE", "default")
+        is_custom = (style_mode == "custom" and len(list(self._config.get("CUSTOM_NOTE_TEMPLATES", []) or [])) > 0)
         # Deterministic emoji heading enforcement (applied in default style)
         if not is_custom:
             raw_notes = re.sub(r"^##\s*(?:🎯\s*)?Learning Objectives", "## 🎯 Learning Objectives", raw_notes, flags=re.MULTILINE | re.IGNORECASE)
             raw_notes = re.sub(r"^##\s*(?:📝\s*)?Notes", "## 📝 Notes", raw_notes, flags=re.MULTILINE | re.IGNORECASE)
         return raw_notes, getattr(engine, "last_model_used", "")
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 8b. GEMINI BATCH API MANAGER
+# ─────────────────────────────────────────────────────────────────────────────
+class GeminiBatchManager:
+    """
+    Manages asynchronous background note generation using the Gemini Batch API (client.batches).
+    Uses the separate Batch quota pool so background timetable preparation never consumes live RPM/RPD.
+    """
+    def __init__(self, config: ConfigManager):
+        self._config = config
+
+    def _get_client(self) -> Optional[Any]:
+        if not HAS_GOOGLE_GENAI or genai is None:
+            print("[GeminiBatchManager] google-genai library is not installed.")
+            return None
+        api_key = self._config.get_notes_api_key() or self._config.get_spare_api_key() or self._config.get_chat_api_key()
+        if not api_key:
+            print("[GeminiBatchManager] No Gemini API key available for batch creation.")
+            return None
+        return genai.Client(api_key=api_key)
+
+    def create_batch_job(self, batch_items: list[dict], preferred_model: str = "gemini-4-hydrogen") -> dict:
+        """
+        Creates a single batch job containing all high-confidence candidate lecture sessions.
+        batch_items is a list of dicts with: session_key, title, date, lec_code, file_path, prompt.
+        """
+        client = self._get_client()
+        if not client:
+            return {"success": False, "error": "Batch client not available (missing google-genai library or API key)."}
+
+        if not batch_items:
+            return {"success": False, "error": "No items provided for batch job."}
+
+        inlined_requests = []
+        for item in batch_items:
+            req = genai_types.InlinedRequest(
+                contents=[genai_types.Content(parts=[genai_types.Part.from_text(text=item["prompt"])])],
+                metadata={
+                    "session_key": str(item["session_key"]),
+                    "title": str(item["title"]),
+                    "date": str(item.get("date", "")),
+                    "lec_code": str(item.get("lec_code", "")),
+                    "file_path": str(item.get("file_path", ""))
+                },
+                config=genai_types.GenerateContentConfig(
+                    temperature=0.2,
+                    max_output_tokens=8192
+                )
+            )
+            inlined_requests.append(req)
+
+        models_to_try = [preferred_model, "gemini-3.8-flash"]
+        last_err = ""
+        for target_model in models_to_try:
+            try:
+                print(f"[GeminiBatchManager] Submitting batch job with {len(inlined_requests)} lecture(s) to '{target_model}'...")
+                job = client.batches.create(
+                    model=target_model,
+                    src=inlined_requests,
+                    config=genai_types.CreateBatchJobConfig(
+                        display_name=f"Synapse_AutoPrep_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+                    )
+                )
+                print(f"[GeminiBatchManager] Batch job created successfully: {job.name} (state: {job.state}) ✓")
+                sessions_map = {}
+                for itm in batch_items:
+                    sessions_map[itm["session_key"]] = {
+                        "title": itm["title"],
+                        "date": itm.get("date", ""),
+                        "file_path": str(itm.get("file_path", "")),
+                        "lec_code": itm.get("lec_code", "")
+                    }
+                return {
+                    "success": True,
+                    "job_name": job.name,
+                    "model": target_model,
+                    "state": str(job.state),
+                    "created_at": time.time(),
+                    "sessions": sessions_map
+                }
+            except Exception as e:
+                last_err = str(e)
+                print(f"[GeminiBatchManager] Batch creation failed with {target_model}: {last_err}")
+
+        return {"success": False, "error": last_err}
+
+    def poll_batch_job(self, job_name: str) -> dict:
+        """Polls status of an active batch job by resource name."""
+        client = self._get_client()
+        if not client:
+            return {"state": "ERROR", "error": "Batch client not available."}
+
+        try:
+            job = client.batches.get(name=job_name)
+            state_str = str(job.state).upper()
+            err_msg = str(job.error) if getattr(job, "error", None) else ""
+            return {
+                "job_name": job.name,
+                "state": state_str,
+                "error": err_msg,
+                "raw_job": job
+            }
+        except Exception as e:
+            return {"state": "ERROR", "error": str(e)}
+
+    def extract_batch_results(self, job) -> list[dict]:
+        """Extracts parsed lecture notes and metadata from a SUCCEEDED batch job."""
+        client = self._get_client()
+        results = []
+
+        # 1. Inlined responses
+        dest = getattr(job, "dest", None)
+        if dest and getattr(dest, "inlined_responses", None):
+            for inlined in dest.inlined_responses:
+                meta = getattr(inlined, "metadata", {}) or {}
+                resp = getattr(inlined, "response", None)
+                err = getattr(inlined, "error", None)
+                text = ""
+                if resp and getattr(resp, "candidates", None) and resp.candidates:
+                    c = resp.candidates[0]
+                    parts = getattr(getattr(c, "content", None), "parts", [])
+                    if parts:
+                        text = getattr(parts[0], "text", "") or ""
+                results.append({
+                    "session_key": meta.get("session_key", ""),
+                    "title": meta.get("title", ""),
+                    "date": meta.get("date", ""),
+                    "file_path": meta.get("file_path", ""),
+                    "lec_code": meta.get("lec_code", ""),
+                    "text": text.strip(),
+                    "error": str(err) if err else ""
+                })
+            return results
+
+        # 2. File destination
+        if client and dest and getattr(dest, "file_name", None):
+            try:
+                content_bytes = client.files.download(file=dest.file_name)
+                if content_bytes:
+                    for line in content_bytes.decode("utf-8", errors="replace").splitlines():
+                        line_str = line.strip()
+                        if not line_str:
+                            continue
+                        try:
+                            line_obj = json.loads(line_str)
+                            meta = line_obj.get("metadata", {})
+                            resp = line_obj.get("response", {})
+                            text = ""
+                            candidates = resp.get("candidates", [])
+                            if candidates:
+                                parts = candidates[0].get("content", {}).get("parts", [])
+                                if parts:
+                                    text = parts[0].get("text", "")
+                            results.append({
+                                "session_key": meta.get("session_key", ""),
+                                "title": meta.get("title", ""),
+                                "date": meta.get("date", ""),
+                                "file_path": meta.get("file_path", ""),
+                                "lec_code": meta.get("lec_code", ""),
+                                "text": text.strip(),
+                                "error": str(line_obj.get("error", ""))
+                            })
+                        except Exception:
+                            pass
+            except Exception as dl_err:
+                print(f"[GeminiBatchManager] Error downloading batch file output: {dl_err}")
+
+        return results
 
 class NotionSyncEngine:
     def __init__(self, config: ConfigManager, state: AppState, render_engine: Optional["SlideRenderEngine"] = None):
@@ -2927,10 +3106,10 @@ class NotionSyncEngine:
                 ]):
                     footer_top_norm = min(footer_top_norm, max(0.85, s.top / slide_h - 0.005))
 
-        # Check if any picture or drawing extends high up near the top or low near the bottom
+        # Check if any picture, diagram group, curve, connector, or drawing extends high up near the top or low near the bottom
         for s in slide.shapes:
             st = getattr(s, "shape_type", None)
-            if st in (13, 6):  # Picture or Group
+            if st in (13, 6, 5, 9, 1):  # Picture, Group, Freeform, Line/Connector, or AutoShape
                 if s.top < title_bot_norm * slide_h and (s.left + s.width) > 0.3 * slide_w:
                     # Diagram extends into upper area; reduce top crop to avoid clipping diagram top
                     title_bot_norm = max(0.0, min(title_bot_norm, s.top / slide_h - 0.005))
@@ -5834,6 +6013,7 @@ class InAppNotesManager:
 ANNOUNCEMENTS_URL = "https://raw.githubusercontent.com/Synapse-Study/synapse/main/announcements.json"
 
 _GLOBAL_ANNOUNCEMENTS_ENGINE = None
+_GLOBAL_APP_API = None
 _WAKE_OBSERVER_INSTANCE = None
 
 class AnnouncementsEngine:
@@ -5923,6 +6103,8 @@ class AnnouncementsEngine:
 # ─────────────────────────────────────────────────────────────────────────────
 class AppAPI:
     def __init__(self):
+        global _GLOBAL_APP_API
+        _GLOBAL_APP_API = self
         self._window: Optional[webview.Window] = None
         self._config = ConfigManager()
         self.state   = AppState()
@@ -5941,7 +6123,8 @@ class AppAPI:
         self._render_engine   = SlideRenderEngine(on_ready_callback=self._on_slide_render_ready)
         self._ocr_engine      = OCREngine(on_ready_callback=self._on_ocr_ready, min_confidence=ocr_thresh)
         self._cards_engine    = GeminiCardsEngine(self._config)
-        self._notes_engine    = GeminiNotesEngine(self.state, self._config, self._cards_engine)
+        self._notes_engine    = GeminiNotesEngine(self.state, self._config, self._cards_engine, render_engine=self._render_engine)
+        self._batch_manager   = GeminiBatchManager(self._config)
         self._notion_engine   = NotionSyncEngine(self._config, self.state, self._render_engine)
         self._index_engine    = KCLLectureIndexEngine(LECTURES_CACHE_DB_PATH, self._config, on_update_callback=self._on_index_updated)
         self._onedrive_engine = KCLOneDriveEngine(self._config, self._index_engine)
@@ -5961,6 +6144,12 @@ class AppAPI:
         self._auto_prep_status: dict[str, dict] = {}
         self._auto_prep_quota_exhausted_until: float = 0.0
         self._notified_missing_slides: set[str] = set()
+
+        # Restore any active batch job from config
+        active_batch = self._config.get_active_batch_job()
+        if active_batch and isinstance(active_batch.get("sessions"), dict):
+            for s_key in active_batch["sessions"]:
+                self._auto_prep_status[s_key] = {"status": "in_batch", "message": "Batch Preparing"}
 
     def set_window(self, window: webview.Window):
         self._window = window
@@ -6054,6 +6243,250 @@ class AppAPI:
     def check_for_updates(self) -> dict:
         """Query GitHub Releases for the latest Synapse release."""
         return check_github_update()
+
+    def install_app_update(self, download_url: str = "") -> dict:
+        """
+        Download and perform 1-click in-app self update on macOS.
+        Emits 'update-progress' events to the UI during download and extraction.
+        """
+        url = (download_url or "").strip()
+        if not url:
+            info = check_github_update()
+            url = info.get("zip_url") or info.get("download_url") or ""
+        if not url:
+            return {"success": False, "error": "No update download URL found in latest release."}
+
+        t = threading.Thread(target=self._perform_app_update, args=(url,), daemon=True)
+        t.start()
+        return {"success": True, "message": "Update download started in background."}
+
+    def _perform_app_update(self, url: str) -> None:
+        """Background thread executing update download, extraction, quarantine removal, and swap."""
+        temp_dir = None
+        try:
+            self._notify_frontend("update-progress", {
+                "status": "downloading",
+                "percent": 0,
+                "downloaded_mb": 0.0,
+                "total_mb": 0.0,
+                "message": "Starting download..."
+            })
+
+            temp_dir = Path(tempfile.mkdtemp(prefix="synapse_updater_"))
+            is_zip = ".zip" in url.lower() or not (".dmg" in url.lower())
+            archive_path = temp_dir / ("update.zip" if is_zip else "update.dmg")
+
+            # Download with progress chunking
+            req = urllib.request.Request(
+                url,
+                headers={"User-Agent": f"SynapseApp/{CURRENT_VERSION}"}
+            )
+            ssl_ctx = None
+            try:
+                import certifi
+                ssl_ctx = ssl.create_default_context(cafile=certifi.where())
+            except Exception:
+                try:
+                    ssl_ctx = ssl.create_default_context()
+                except Exception:
+                    pass
+
+            try:
+                resp = urllib.request.urlopen(req, timeout=30, context=ssl_ctx)
+            except urllib.error.URLError:
+                unverified = ssl._create_unverified_context()
+                resp = urllib.request.urlopen(req, timeout=30, context=unverified)
+
+            with resp:
+                total_bytes = int(resp.headers.get("Content-Length", 0))
+                downloaded_bytes = 0
+                last_notify_time = 0.0
+
+                with open(archive_path, "wb") as f_out:
+                    while True:
+                        chunk = resp.read(65536)
+                        if not chunk:
+                            break
+                        f_out.write(chunk)
+                        downloaded_bytes += len(chunk)
+
+                        now = time.time()
+                        if now - last_notify_time >= 0.25 or (total_bytes and downloaded_bytes >= total_bytes):
+                            last_notify_time = now
+                            pct = int((downloaded_bytes / total_bytes * 100)) if total_bytes > 0 else 50
+                            dl_mb = round(downloaded_bytes / (1024 * 1024), 1)
+                            tot_mb = round(total_bytes / (1024 * 1024), 1) if total_bytes > 0 else 0.0
+                            self._notify_frontend("update-progress", {
+                                "status": "downloading",
+                                "percent": min(98, pct),
+                                "downloaded_mb": dl_mb,
+                                "total_mb": tot_mb,
+                                "message": f"Downloading update ({dl_mb}/{tot_mb} MB)..."
+                            })
+
+            self._notify_frontend("update-progress", {
+                "status": "extracting",
+                "percent": 99,
+                "downloaded_mb": round(downloaded_bytes / (1024 * 1024), 1),
+                "total_mb": round(total_bytes / (1024 * 1024), 1) if total_bytes else 0.0,
+                "message": "Extracting and verifying application..."
+            })
+
+            extracted_app = None
+            staging_extract_dir = temp_dir / "extracted"
+            staging_extract_dir.mkdir(parents=True, exist_ok=True)
+
+            if is_zip:
+                # Use macOS ditto -x -k to unpack preserving resource forks, permissions, and symlinks
+                res = subprocess.run(
+                    ["ditto", "-x", "-k", str(archive_path), str(staging_extract_dir)],
+                    capture_output=True,
+                    text=True
+                )
+                if res.returncode != 0:
+                    raise RuntimeError(f"Zip extraction failed: {res.stderr}")
+
+                # Locate Synapse.app
+                candidate = staging_extract_dir / "Synapse.app"
+                if candidate.exists() and candidate.is_dir():
+                    extracted_app = candidate
+                else:
+                    found = list(staging_extract_dir.rglob("Synapse.app"))
+                    if found:
+                        extracted_app = found[0]
+                    else:
+                        raise RuntimeError("Extracted archive did not contain Synapse.app")
+            else:
+                # Fallback DMG handling
+                mount_dir = temp_dir / "dmg_mount"
+                mount_dir.mkdir(parents=True, exist_ok=True)
+                attach_res = subprocess.run(
+                    ["hdiutil", "attach", str(archive_path), "-mountpoint", str(mount_dir), "-nobrowse", "-quiet"],
+                    capture_output=True,
+                    text=True
+                )
+                if attach_res.returncode != 0:
+                    raise RuntimeError(f"DMG mount failed: {attach_res.stderr}")
+
+                try:
+                    dmg_app = mount_dir / "Synapse.app"
+                    if not dmg_app.exists():
+                        raise RuntimeError("DMG did not contain Synapse.app")
+                    extracted_app = staging_extract_dir / "Synapse.app"
+                    subprocess.run(["ditto", str(dmg_app), str(extracted_app)], check=True)
+                finally:
+                    subprocess.run(["hdiutil", "detach", str(mount_dir), "-force", "-quiet"], check=False)
+
+            # Strip quarantine attributes from extracted app
+            subprocess.run(["xattr", "-cr", str(extracted_app)], check=False)
+
+            # Ensure executable permissions inside Contents/MacOS
+            macos_bin_dir = extracted_app / "Contents" / "MacOS"
+            if macos_bin_dir.is_dir():
+                for f in macos_bin_dir.iterdir():
+                    if f.is_file():
+                        try:
+                            f.chmod(f.stat().st_mode | 0o755)
+                        except Exception:
+                            pass
+
+            # Ad-hoc sign extracted app if signature was disturbed
+            subprocess.run(["codesign", "--force", "--deep", "--sign", "-", str(extracted_app)], check=False)
+
+            # Determine destination app bundle path
+            target_app = Path("/Applications/Synapse.app")
+            if getattr(sys, "frozen", False):
+                exe_path = Path(sys.executable).resolve()
+                for p in exe_path.parents:
+                    if p.suffix == ".app":
+                        target_app = p
+                        break
+
+            # Create detached swap shell script
+            helper_path = temp_dir / "swap_helper.sh"
+            helper_script = textwrap.dedent(f"""\\
+                #!/bin/bash
+                OLD_PID="{os.getpid()}"
+                SRC_APP="{extracted_app.resolve()}"
+                DEST_APP="{target_app.resolve()}"
+                LOG_FILE="/tmp/synapse_update.log"
+
+                echo "[$(date)] Updater started for PID $OLD_PID" >> "$LOG_FILE"
+
+                # Wait for old process to terminate (up to 30s)
+                WAIT_COUNT=0
+                while kill -0 "$OLD_PID" 2>/dev/null; do
+                    sleep 0.5
+                    WAIT_COUNT=$((WAIT_COUNT+1))
+                    if [ $WAIT_COUNT -gt 60 ]; then
+                        echo "[$(date)] Force terminating old PID $OLD_PID" >> "$LOG_FILE"
+                        kill -9 "$OLD_PID" 2>/dev/null || true
+                        break
+                    fi
+                done
+                sleep 0.5
+
+                BACKUP_APP="${{DEST_APP}}.old"
+                rm -rf "$BACKUP_APP" 2>/dev/null || true
+
+                if [ -d "$DEST_APP" ]; then
+                    echo "[$(date)] Moving existing app to backup" >> "$LOG_FILE"
+                    mv "$DEST_APP" "$BACKUP_APP" 2>> "$LOG_FILE" || true
+                fi
+
+                echo "[$(date)] Copying new app to $DEST_APP" >> "$LOG_FILE"
+                ditto "$SRC_APP" "$DEST_APP" 2>> "$LOG_FILE"
+                xattr -cr "$DEST_APP" 2>/dev/null || true
+
+                if [ -d "$DEST_APP" ]; then
+                    rm -rf "$BACKUP_APP" 2>/dev/null || true
+                    echo "[$(date)] Relaunching Synapse from $DEST_APP" >> "$LOG_FILE"
+                    open -n "$DEST_APP"
+                else
+                    echo "[$(date)] Error: DEST_APP missing, reverting to backup" >> "$LOG_FILE"
+                    if [ -d "$BACKUP_APP" ]; then
+                        mv "$BACKUP_APP" "$DEST_APP"
+                        open -n "$DEST_APP"
+                    fi
+                fi
+
+                rm -rf "{temp_dir.resolve()}" 2>/dev/null || true
+                exit 0
+            """)
+            helper_path.write_text(helper_script, encoding="utf-8")
+            helper_path.chmod(0o755)
+
+            self._notify_frontend("update-progress", {
+                "status": "ready",
+                "percent": 100,
+                "downloaded_mb": round(downloaded_bytes / (1024 * 1024), 1),
+                "total_mb": round(downloaded_bytes / (1024 * 1024), 1),
+                "message": "Update installed! Restarting Synapse..."
+            })
+
+            # Spawn detached swap helper
+            subprocess.Popen(
+                ["/bin/bash", str(helper_path.resolve())],
+                start_new_session=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL
+            )
+
+            # Brief grace pause for UI toast/event delivery before termination
+            time.sleep(1.2)
+            os._exit(0)
+
+        except Exception as exc:
+            err_msg = str(exc)
+            print(f"Self-update failed: {traceback.format_exc()}")
+            self._notify_frontend("update-progress", {
+                "status": "error",
+                "percent": 0,
+                "message": f"Update failed: {err_msg}"
+            })
+            if temp_dir and temp_dir.exists():
+                shutil.rmtree(temp_dir, ignore_errors=True)
 
     # ── Home Dashboard & KCL Timetable ───────────────────────────────────────
     def get_home_dashboard(self, view_mode: str = "today", target_date: str = "") -> dict:
@@ -6196,9 +6629,18 @@ class AppAPI:
         return {"success": True, "status": status}
 
     def _auto_prepare_loop(self):
-        time.sleep(12)  # Delay after startup
+        time.sleep(5)  # Quick check shortly after startup
+        try:
+            self._poll_active_batch_job()
+        except Exception as e:
+            print(f"[AutoPrepareNotes] Initial batch poll note: {e}")
+
+        time.sleep(7)
         while not getattr(self, "_stop_requested", False):
             try:
+                # 1. Always poll active batch job first
+                self._poll_active_batch_job()
+
                 enabled = self._config.get("AUTO_PREPARE_NOTES", True)
                 is_quota_exhausted = time.time() < getattr(self, "_auto_prep_quota_exhausted_until", 0.0)
                 if enabled and not is_quota_exhausted and self._is_off_peak_time():
@@ -6208,19 +6650,133 @@ class AppAPI:
                 print(f"[AutoPrepareNotes] Background worker note: {e}")
             time.sleep(300)  # Check every 5 minutes
 
+    def _poll_active_batch_job(self) -> bool:
+        """
+        Polls active Gemini Batch API job non-blockingly.
+        Returns True if a batch job is active and still running, False if none active or completed.
+        """
+        active_batch = self._config.get_active_batch_job()
+        if not active_batch:
+            return False
+
+        job_name = active_batch.get("job_name", "")
+        if not job_name:
+            self._config.set_active_batch_job(None)
+            return False
+
+        poll_info = self._batch_manager.poll_batch_job(job_name)
+        state = poll_info.get("state", "").upper()
+        print(f"[AutoPrepareNotes] Polled active batch job '{job_name}': state = {state}")
+
+        sessions_dict = active_batch.get("sessions", {})
+        if not isinstance(sessions_dict, dict):
+            sessions_dict = {}
+
+        # Running / In-Progress states
+        if any(s in state for s in ["PENDING", "QUEUED", "RUNNING", "UPDATING"]):
+            for s_key in sessions_dict:
+                self._auto_prep_status[s_key] = {"status": "in_batch", "message": "Batch Preparing"}
+            return True
+
+        # Succeeded state
+        if "SUCCEEDED" in state:
+            raw_job = poll_info.get("raw_job")
+            results = self._batch_manager.extract_batch_results(raw_job) if raw_job else []
+            print(f"[AutoPrepareNotes] Batch job {job_name} SUCCEEDED with {len(results)} results ✓")
+
+            saved_count = 0
+            for res in results:
+                s_key = res.get("session_key", "")
+                title = res.get("title") or (sessions_dict.get(s_key, {}).get("title") if isinstance(sessions_dict, dict) else "") or "Lecture Note"
+                f_path_str = res.get("file_path") or (sessions_dict.get(s_key, {}).get("file_path") if isinstance(sessions_dict, dict) else "")
+                f_path = Path(f_path_str) if f_path_str else Path("")
+                notes_text = res.get("text", "").strip()
+
+                if notes_text:
+                    saved_id = self._save_processed_note_with_diagrams(s_key, title, notes_text, f_path, model_used="Gemini Batch")
+                    if saved_id:
+                        saved_count += 1
+                else:
+                    err = res.get("error") or "Empty notes returned from batch"
+                    self._config.record_auto_prep_attempt(s_key, status="failed", error=err)
+                    self._auto_prep_status[s_key] = {"status": "failed", "message": str(err)[:80]}
+
+            self._config.set_active_batch_job(None)
+            self._notify_frontend("timetable-update", {"type": "batch_completed", "saved_count": saved_count})
+            self._notify_frontend("app-status", {
+                "type": "success",
+                "message": f"Auto-Prep: Batch complete! Prepared notes for {saved_count} lecture(s) 🩺✓"
+            })
+            return False
+
+        # Failed / Cancelled / Expired
+        err_msg = poll_info.get("error") or f"Batch job ended in state {state}"
+        print(f"[AutoPrepareNotes] Batch job {job_name} failed: {err_msg}")
+        for s_key in sessions_dict:
+            self._config.record_auto_prep_attempt(s_key, status="failed", error=err_msg)
+            self._auto_prep_status[s_key] = {"status": "failed", "message": f"Batch failed: {err_msg[:60]}"}
+
+        self._config.set_active_batch_job(None)
+        self._notify_frontend("timetable-update", {"type": "batch_failed", "error": err_msg})
+        return False
+
+    def _save_processed_note_with_diagrams(self, session_key: str, lec_title: str, notes_text: str, f_path: Path, model_used: str = "Gemini Batch") -> Optional[str]:
+        """Helper to save generated lecture notes into In-App Notes DB, extract and save diagram thumbnails, and update history."""
+        try:
+            mod, blk = InAppNotesManager.detect_module_and_block(lec_title, str(f_path) if f_path else "")
+            save_res = self._in_app_notes_manager.save_note(
+                title=lec_title,
+                content=notes_text,
+                module=mod,
+                block=blk,
+                source_file=f_path.name if f_path and f_path.exists() else "",
+                model=model_used
+            )
+
+            if save_res.get("success"):
+                note_id = save_res.get("note_id", "")
+                if f_path and f_path.exists() and f_path.suffix.lower().endswith(".pptx"):
+                    try:
+                        prs = Presentation(str(f_path))
+                        diag_dir = self._in_app_notes_manager.get_diagrams_dir(note_id, mod, blk)
+                        slide_tags = re.findall(r"\(\s*slides?\s+([0-9\s,\-–and]+?):", notes_text, re.IGNORECASE)
+                        all_s_nums = set()
+                        for tag in slide_tags:
+                            for num_match in re.findall(r"\d+", tag):
+                                n = int(num_match)
+                                if 1 < n <= len(prs.slides):
+                                    all_s_nums.add(n)
+                        for s_num in all_s_nums:
+                            try:
+                                png_bytes = self._notion_engine.get_best_slide_image(prs, s_num, pptx_path=f_path)
+                                if png_bytes and diag_dir:
+                                    (diag_dir / f"slide_{s_num}.png").write_bytes(png_bytes)
+                            except Exception:
+                                pass
+                    except Exception as d_err:
+                        print(f"[AutoPrepareNotes] Diagram caching error for '{lec_title}': {d_err}")
+
+                self._config.record_auto_prep_attempt(session_key, status="ready")
+                self._auto_prep_status[session_key] = {"status": "ready", "message": "Notes Ready"}
+                print(f"[AutoPrepareNotes] Notes ready for '{lec_title}' saved to {mod} · {blk} ✓")
+                return note_id
+        except Exception as e:
+            print(f"[AutoPrepareNotes] Error saving processed note for '{lec_title}': {e}")
+        return None
+
     def _run_auto_prepare_cycle(self):
+        # 1. Yield if an active batch job is currently running
+        if self._poll_active_batch_job():
+            return
+
         today_data = self._timetable_manager.get_sessions_for_view("today")
         tomorrow_data = self._timetable_manager.get_sessions_for_view("tomorrow")
         all_sessions = (today_data.get("sessions") or []) + (tomorrow_data.get("sessions") or [])
 
         history = self._config.get_auto_prep_history()
-        lectures_prepared_this_run = 0
+        candidate_batch_items = []
 
         for s in all_sessions:
-            if lectures_prepared_this_run >= 2:
-                print("[AutoPrepareNotes] Reached maximum cap of 2 lectures for this auto-prepare run. Yielding until next cycle.")
-                break
-
             if self._is_user_busy():
                 print("[AutoPrepareNotes] User activity detected; yielding background pre-generation.")
                 return
@@ -6263,11 +6819,6 @@ class AppAPI:
                 self._auto_prep_status[session_key] = {"status": "ready", "message": "Notes Ready"}
                 continue
 
-            # Circuit-breaker: do not retry more than 2 failed attempts per session per day to protect prompt quota
-            attempts = self._auto_prep_attempts.get(session_key, 0)
-            if attempts >= 2:
-                continue
-
             lec_code = s.get("lec_code") or ""
             topic = s.get("clean_title") or s.get("raw_summary") or ""
 
@@ -6280,19 +6831,12 @@ class AppAPI:
                 lec_code=lec_code
             )
 
-            if not (slide_info and slide_info.get("found")):
+            # Strict Match Filtering: Skip missing or low-confidence matches completely
+            if not (slide_info and slide_info.get("found") and slide_info.get("high_confidence")):
                 self._auto_prep_status[session_key] = {
-                    "status": "slides_missing",
-                    "message": "Slides not found in OneDrive"
+                    "status": "no_slide_match",
+                    "message": "No slide match — generate manually"
                 }
-                # Alert user once per lecture so they can link the presentation manually
-                if session_key not in self._notified_missing_slides:
-                    self._notified_missing_slides.add(session_key)
-                    lec_name = s.get("clean_title") or lec_code or s.get("code") or "lecture"
-                    self._notify_frontend("app-status", {
-                        "type": "warning",
-                        "message": f"Auto-Prep: Couldn't find slides for '{lec_name}'. Click 'Find Slides' to link presentation."
-                    })
                 continue
 
             f_path = Path(slide_info["file_path"])
@@ -6306,116 +6850,48 @@ class AppAPI:
             except Exception:
                 continue
 
-            if self._is_user_busy():
-                return
-
             lec_title = s.get("clean_title") or lec_code or f_path.stem
-            print(f"[AutoPrepareNotes] Quietly pre-generating notes for '{lec_title}' ({f_path.name}) [attempt {attempts + 1}/2]...")
+            prompt, _ = self._notes_engine.build_notes_prompt(prs, lec_title)
 
-            self._auto_prep_attempts[session_key] = attempts + 1
+            candidate_batch_items.append({
+                "session_key": session_key,
+                "title": lec_title,
+                "date": s_date or "",
+                "lec_code": lec_code,
+                "file_path": str(f_path),
+                "prompt": prompt
+            })
 
-            try:
-                def _bg_status_check(msg, model=None):
-                    if self._is_user_busy():
-                        raise InterruptedError("User activity detected; yielding background pre-generation.")
+        if candidate_batch_items:
+            print(f"[AutoPrepareNotes] Submitting {len(candidate_batch_items)} high-confidence lecture(s) together in Gemini Batch API...")
+            batch_res = self._batch_manager.create_batch_job(candidate_batch_items)
+            if batch_res.get("success"):
+                self._config.set_active_batch_job(batch_res)
+                for item in candidate_batch_items:
+                    s_key = item["session_key"]
+                    self._auto_prep_status[s_key] = {"status": "in_batch", "message": "Batch Preparing"}
+                    self._config.record_auto_prep_attempt(s_key, status="in_batch")
 
-                notes, model_used = self._notes_engine.generate_lecture_notes(
-                    prs,
-                    lec_title,
-                    status_callback=_bg_status_check,
-                    preferred_model="gemini-3.5-flash"
-                )
-
-                if self._is_user_busy():
-                    self._auto_prep_attempts[session_key] = max(0, attempts)
-                    return
-
-                mod, blk = InAppNotesManager.detect_module_and_block(lec_title, str(f_path))
-                save_res = self._in_app_notes_manager.save_note(
-                    title=lec_title,
-                    content=notes,
-                    module=mod,
-                    block=blk,
-                    source_file=f_path.name,
-                    model=model_used
-                )
-
-                if save_res.get("success"):
-                    note_id = save_res.get("note_id", "")
-                    diag_dir = self._in_app_notes_manager.get_diagrams_dir(note_id, mod, blk)
-                    slide_tags = re.findall(r"\(\s*slides?\s+([0-9\s,\-–and]+?):", notes, re.IGNORECASE)
-                    all_s_nums = set()
-                    for tag in slide_tags:
-                        for num_match in re.findall(r"\d+", tag):
-                            n = int(num_match)
-                            if 1 < n <= len(prs.slides):
-                                all_s_nums.add(n)
-                    for s_num in all_s_nums:
-                        try:
-                            png_bytes = self._notion_engine.get_best_slide_image(prs, s_num, pptx_path=f_path)
-                            if png_bytes and diag_dir:
-                                (diag_dir / f"slide_{s_num}.png").write_bytes(png_bytes)
-                        except Exception:
-                            pass
-
-                    self._config.record_auto_prep_attempt(session_key, status="ready")
-                    self._auto_prep_status[session_key] = {"status": "ready", "message": "Notes Ready"}
-                    print(f"[AutoPrepareNotes] Notes ready for '{lec_title}' saved to {mod} · {blk} ✓")
-                    self._notify_frontend("timetable-update", {
-                        "type": "note_ready",
-                        "note_id": note_id,
-                        "session_code": s.get("code")
-                    })
-                    self._notify_frontend("app-status", {
-                        "type": "success",
-                        "message": f"Auto-Prep: Notes ready for '{lec_title}' 🩺✓"
-                    })
-                    lectures_prepared_this_run += 1
-                    if lectures_prepared_this_run < 2:
-                        print("[AutoPrepareNotes] Pausing 30 seconds before next lecture to prevent TPM/RPM limits from tripping...")
-                        time.sleep(30)
-            except InterruptedError:
-                print(f"[AutoPrepareNotes] Yielded generation for '{lec_title}' due to user activity.")
-                self._auto_prep_attempts[session_key] = max(0, attempts)
-                return
-            except Exception as ge:
-                err_str = str(ge)
-                print(f"[AutoPrepareNotes] Error pre-generating notes for '{lec_title}': {err_str}")
-                is_quota = any(q in err_str.lower() for q in [
-                    "quota exceeded", "resource_exhausted", "429", "requests per day", "rate limit"
-                ])
-                # Record in persistent history to enforce 4-hour per-lecture cooldown
-                self._config.record_auto_prep_attempt(
-                    session_key,
-                    status="quota_exhausted" if is_quota else "failed",
-                    error=err_str
-                )
-                if is_quota:
-                    self._auto_prep_quota_exhausted_until = time.time() + (4 * 3600)
-                    self._auto_prep_status[session_key] = {
-                        "status": "quota_exhausted",
-                        "message": "Daily Gemini quota (20 req/day) exhausted. Resumes in 4h."
-                    }
-                    self._notify_frontend("auto-prepare-update", self.get_auto_prepare_status())
-                    self._notify_frontend("app-status", {
-                        "type": "warning",
-                        "message": "Auto-Prep: Gemini rate/quota limit reached. Pausing for 4 hours."
-                    })
-                    return
-                else:
-                    self._auto_prep_status[session_key] = {
-                        "status": "failed",
-                        "message": err_str[:80]
-                    }
-                    if self._auto_prep_attempts[session_key] >= 2:
-                        self._notify_frontend("app-status", {
-                            "type": "error",
-                            "message": f"Auto-Prep failed for '{lec_title}': {err_str[:60]}. Click 'Find Slides' to check manually."
-                        })
+                self._notify_frontend("timetable-update", {"type": "batch_submitted"})
+                self._notify_frontend("app-status", {
+                    "type": "info",
+                    "message": f"Auto-Prep: Background batch job submitted for {len(candidate_batch_items)} lecture(s)."
+                })
+            else:
+                err = batch_res.get("error", "Unknown batch creation error")
+                print(f"[AutoPrepareNotes] Failed to create batch job: {err}")
+                for item in candidate_batch_items:
+                    s_key = item["session_key"]
+                    self._config.record_auto_prep_attempt(s_key, status="failed", error=err)
+                    self._auto_prep_status[s_key] = {"status": "failed", "message": str(err)[:80]}
 
     def get_timetable_sessions(self, view_mode: str = "today", target_date: str = "") -> dict:
         data = self._timetable_manager.get_sessions_for_view(view_mode, target_date=target_date)
         sessions = data.get("sessions", [])
+
+        active_batch = self._config.get_active_batch_job()
+        batch_sessions = active_batch.get("sessions", {}) if (active_batch and isinstance(active_batch.get("sessions"), dict)) else {}
+
         for s in sessions:
             saved = self._find_saved_note_for_session(s)
             if saved:
@@ -6428,9 +6904,13 @@ class AppAPI:
             # Only track and display auto-prep status for actual lectures
             if s.get("is_lecture", False):
                 session_key = (s.get("code") or s.get("lec_code") or s.get("clean_title") or s.get("raw_summary") or "").strip()
-                ap_info = getattr(self, "_auto_prep_status", {}).get(session_key, {})
-                s["auto_prep_status"] = ap_info.get("status", "")
-                s["auto_prep_message"] = ap_info.get("message", "")
+                if session_key in batch_sessions and not s["has_saved_note"]:
+                    s["auto_prep_status"] = "in_batch"
+                    s["auto_prep_message"] = "Batch Preparing"
+                else:
+                    ap_info = getattr(self, "_auto_prep_status", {}).get(session_key, {})
+                    s["auto_prep_status"] = ap_info.get("status", "")
+                    s["auto_prep_message"] = ap_info.get("message", "")
             else:
                 s["auto_prep_status"] = ""
                 s["auto_prep_message"] = ""
@@ -6447,9 +6927,13 @@ class AppAPI:
 
                 if s.get("is_lecture", False):
                     session_key = (s.get("code") or s.get("lec_code") or s.get("clean_title") or s.get("raw_summary") or "").strip()
-                    ap_info = getattr(self, "_auto_prep_status", {}).get(session_key, {})
-                    s["auto_prep_status"] = ap_info.get("status", "")
-                    s["auto_prep_message"] = ap_info.get("message", "")
+                    if session_key in batch_sessions and not s["has_saved_note"]:
+                        s["auto_prep_status"] = "in_batch"
+                        s["auto_prep_message"] = "Batch Preparing"
+                    else:
+                        ap_info = getattr(self, "_auto_prep_status", {}).get(session_key, {})
+                        s["auto_prep_status"] = ap_info.get("status", "")
+                        s["auto_prep_message"] = ap_info.get("message", "")
                 else:
                     s["auto_prep_status"] = ""
                     s["auto_prep_message"] = ""
@@ -6477,11 +6961,15 @@ class AppAPI:
 
         # Candidate tokens for the specific lecture code (e.g. ACRS04L, ACRS04, ACRS 04, ACRS 4)
         lec_tokens = []
+        target_prefix = ""
+        target_num = None
         if target_lec:
             lec_tokens.append(target_lec)
             m_code = re.match(r"^([A-Z]+)(\d+)([A-Z]?)$", target_lec)
             if m_code:
                 prefix, num_str, suffix = m_code.groups()
+                target_prefix = prefix
+                target_num = int(num_str)
                 num_int = int(num_str)
                 lec_tokens.extend([
                     f"{prefix}{num_str}",
@@ -6519,9 +7007,17 @@ class AppAPI:
             "systems", "introduction", "basics", "case", "based", "discussion", "answers",
             "keats", "mbbs", "year", "clinical", "skills", "ethics", "values"
         }
+        # Block / module codes that must NOT be counted as topical keywords
+        block_codes = {
+            "pcrs", "acrs", "mcb", "fpp", "fah", "nbss", "nam", "dh", "iai", "eab",
+            "gen", "agrs", "pgrs", "ams", "pas", "fbs", "ivbcp"
+        }
+        if target_prefix:
+            block_codes.add(target_prefix.lower())
+
         topic_words = [
             w.lower() for w in re.findall(r'[A-Za-z0-9]+', topic_clean)
-            if len(w) > 3 and w.lower() not in stop_words and not re.match(r"^4mbbs", w.lower())
+            if len(w) > 3 and w.lower() not in stop_words and w.lower() not in block_codes and not re.match(r"^4mbbs", w.lower())
         ]
 
         display_name = topic_clean or target_lec or act_clean or "this session"
@@ -6530,6 +7026,16 @@ class AppAPI:
             fn_up = filename.upper()
             fn_low = filename.lower()
             fp_up = file_path_str.upper()
+
+            # Disqualify if candidate file explicitly has a DIFFERENT lecture number for the same block/series prefix
+            # e.g., if target is PCRS-6 (prefix PCRS, num 6), candidate PCRS-1 or PCRS2 or PCRS 3 must be strictly rejected
+            if target_prefix and target_num is not None:
+                cand_nums = re.findall(rf"\b{re.escape(target_prefix)}[-_\s]?(\d+)", fn_up)
+                if cand_nums:
+                    parsed_nums = [int(n) for n in cand_nums]
+                    if target_num not in parsed_nums:
+                        return 0
+
             score = 0
 
             # 1. Primary match: Specific lecture code (e.g. ACRS04L, ACRS04, ACRS 04)
@@ -6611,7 +7117,9 @@ class AppAPI:
                     "filename": best_row["filename"],
                     "slide_count": best_row["slide_count"],
                     "module": best_row["module"],
-                    "block": best_row["block"]
+                    "block": best_row["block"],
+                    "score": best_score,
+                    "high_confidence": (best_score >= 45)
                 }
         except Exception as e:
             print(f"[find_slides_for_session] DB search note: {e}")
@@ -6648,11 +7156,15 @@ class AppAPI:
                 "filename": best_fs_path.name,
                 "slide_count": 0,
                 "module": target_mod,
-                "block": ""
+                "block": "",
+                "score": best_fs_score,
+                "high_confidence": (best_fs_score >= 45)
             }
 
         return {
             "found": False,
+            "score": 0,
+            "high_confidence": False,
             "session_title": display_name,
             "message": f"No lecture slides found matching '{display_name}'.",
             "keats_note": "Note: Lecture slides must be downloaded from KEATS and placed into your connected OneDrive folder (~/OneDrive - King's College London) for Synapse to automatically locate and index them."
@@ -9189,6 +9701,11 @@ def setup_cocoa_shortcuts():
                     def workspaceDidWake_(self, notification):
                         if _GLOBAL_ANNOUNCEMENTS_ENGINE:
                             _GLOBAL_ANNOUNCEMENTS_ENGINE.fetch_async(callback_notify=True)
+                        if _GLOBAL_APP_API:
+                            try:
+                                threading.Thread(target=_GLOBAL_APP_API._poll_active_batch_job, daemon=True).start()
+                            except Exception:
+                                pass
 
                 _WAKE_OBSERVER_INSTANCE = SynapseWakeObserver.alloc().init()
                 AppKit.NSWorkspace.sharedWorkspace().notificationCenter().addObserver_selector_name_object_(

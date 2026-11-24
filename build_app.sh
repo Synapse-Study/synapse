@@ -88,9 +88,12 @@ else
         --collect-all easyocr \
         --collect-all torchvision \
         --collect-all cv2 \
+        --collect-all google.genai \
         --copy-metadata torchvision \
         --copy-metadata torch \
         --copy-metadata easyocr \
+        --hidden-import google.genai \
+        --hidden-import google.genai.types \
         --hidden-import torchvision._C_stable \
         --hidden-import torchvision.image_stable \
         --hidden-import webview \
@@ -102,8 +105,6 @@ else
         --hidden-import pypdfium2 \
         --hidden-import pptx \
         --hidden-import PIL \
-        --hidden-import keyring \
-        --hidden-import keyring.backends.macOS \
         anki_study_suite.py
 
     # 7. Post-build verification and fallback symlinks for torchvision dylibs
@@ -127,12 +128,18 @@ else
     find "dist/Synapse.app" -name ".DS_Store" -delete 2>/dev/null || true
 
     # Update CFBundleShortVersionString in Info.plist
-    plutil -replace CFBundleShortVersionString -string "2.3.1" "dist/Synapse.app/Contents/Info.plist" 2>/dev/null || true
+    plutil -replace CFBundleShortVersionString -string "2.3.2" "dist/Synapse.app/Contents/Info.plist" 2>/dev/null || true
 
     # 8.1 Re-sign app bundle ad-hoc to fix code signatures invalidated by post-build copies
     echo "Signing dist/Synapse.app bundle ad-hoc..."
     codesign --force --deep --sign - "dist/Synapse.app"
     codesign -vvv --deep --strict "dist/Synapse.app"
+
+    # 8.2 Package dist/Synapse-macOS.zip for fast 1-click in-app auto-updates
+    echo "Packaging dist/Synapse-macOS.zip with ditto for in-app self-updater..."
+    rm -f "dist/Synapse-macOS.zip" "$ROOT_DIR/Synapse-macOS.zip"
+    ditto -c -k --sequesterRsrc --keepParent "dist/Synapse.app" "dist/Synapse-macOS.zip"
+    cp "dist/Synapse-macOS.zip" "$ROOT_DIR/Synapse-macOS.zip"
 fi
 
 # 9. Package dist/Synapse.dmg with proper Drag-to-Applications layout
@@ -215,8 +222,9 @@ rm -rf "$ROOT_DIR/Synapse.app" && cp -R "dist/Synapse.app" "$ROOT_DIR/Synapse.ap
 
 echo "=================================================="
 echo " Synapse Build Complete & Verified!"
-echo " App Bundle: $ROOT_DIR/dist/Synapse.app"
-echo " DMG Image:  $ROOT_DIR/dist/Synapse.dmg (also at $ROOT_DIR/Synapse.dmg)"
-echo " Signature:  Verified valid on disk (--strict)"
+echo " App Bundle:  $ROOT_DIR/dist/Synapse.app"
+echo " ZIP Archive: $ROOT_DIR/dist/Synapse-macOS.zip (also at $ROOT_DIR/Synapse-macOS.zip)"
+echo " DMG Image:   $ROOT_DIR/dist/Synapse.dmg (also at $ROOT_DIR/Synapse.dmg)"
+echo " Signature:   Verified valid on disk (--strict)"
 echo "=================================================="
 echo "=================================================="

@@ -3823,7 +3823,7 @@
       </div>
       <h3 class="text-lg font-bold text-[var(--text-primary)]">Synapse</h3>
       <div class="flex items-center gap-2">
-        <span id="about-version-badge" class="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-blue-50 text-blue-700 dark:bg-blue-950/40 dark:text-blue-300">Version 2.3.1</span>
+        <span id="about-version-badge" class="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-blue-50 text-blue-700 dark:bg-blue-950/40 dark:text-blue-300">Version 2.3.2</span>
         <span class="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-emerald-50 text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300 border border-emerald-200/60 dark:border-emerald-800/40 flex items-center gap-1">
           <i data-lucide="code-2" class="w-3 h-3 text-emerald-600 dark:text-emerald-400"></i> Fully Built with Python 3.12
         </span>
@@ -3834,17 +3834,36 @@
       </p>
 
       <!-- Update Banner if newer release found -->
-      <div id="about-update-banner" class="hidden w-full p-2.5 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800/50 flex items-center justify-between gap-2 text-left transition-all">
-        <div class="min-w-0 flex-1">
-          <div class="text-[11px] font-bold text-emerald-700 dark:text-emerald-300 flex items-center gap-1">
-            <i data-lucide="sparkles" class="w-3.5 h-3.5"></i>
-            <span id="about-update-banner-title">New version available!</span>
+      <div id="about-update-banner" class="hidden w-full p-3 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800/50 flex flex-col gap-2.5 text-left transition-all">
+        <div class="flex items-center justify-between gap-2 w-full">
+          <div class="min-w-0 flex-1">
+            <div class="text-[11px] font-bold text-emerald-700 dark:text-emerald-300 flex items-center gap-1">
+              <i data-lucide="sparkles" class="w-3.5 h-3.5"></i>
+              <span id="about-update-banner-title">New version available!</span>
+            </div>
+            <p id="about-update-banner-sub" class="text-[10px] text-emerald-600/80 dark:text-emerald-400/80 truncate">GitHub Releases</p>
           </div>
-          <p id="about-update-banner-sub" class="text-[10px] text-emerald-600/80 dark:text-emerald-400/80 truncate">GitHub Releases</p>
+          <div class="flex items-center gap-1.5 shrink-0">
+            <button id="about-update-install-btn" type="button" onclick="startAppUpdate()" class="px-3 py-1 rounded-full bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-[10px] shadow-xs cursor-pointer flex items-center gap-1 transition-all">
+              <i data-lucide="arrow-down-circle" class="w-3 h-3"></i> Install Update
+            </button>
+            <button id="about-update-banner-btn" type="button" onclick="openAppUpdateUrl()" title="Open release page in browser" class="p-1 rounded-full text-emerald-700 dark:text-emerald-300 hover:bg-emerald-100 dark:hover:bg-emerald-900/40 transition-all cursor-pointer">
+              <i data-lucide="external-link" class="w-3.5 h-3.5"></i>
+            </button>
+          </div>
         </div>
-        <button id="about-update-banner-btn" type="button" onclick="openAppUpdateUrl()" class="px-3 py-1 rounded-full bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-[10px] shrink-0 shadow-xs cursor-pointer flex items-center gap-1">
-          <i data-lucide="download" class="w-3 h-3"></i> Download
-        </button>
+        <!-- Update Progress Bar Container -->
+        <div id="about-update-progress-wrap" class="hidden w-full flex flex-col gap-1 pt-1 border-t border-emerald-200/60 dark:border-emerald-800/40">
+          <div class="flex items-center justify-between text-[10px] font-semibold text-emerald-800 dark:text-emerald-200">
+            <span id="about-update-progress-text" class="flex items-center gap-1">
+              <i data-lucide="loader-2" class="w-3 h-3 animate-spin"></i> Downloading update...
+            </span>
+            <span id="about-update-progress-pct">0%</span>
+          </div>
+          <div class="w-full h-1.5 bg-emerald-200/70 dark:bg-emerald-900/60 rounded-full overflow-hidden">
+            <div id="about-update-progress-bar" class="h-full bg-emerald-600 dark:bg-emerald-400 transition-all duration-200 rounded-full" style="width: 0%;"></div>
+          </div>
+        </div>
       </div>
 
       <!-- EASTER EGG: DR. FLEDGE CONSULTATION ROOM (Summoned via 5 clicks) -->
@@ -4213,7 +4232,7 @@
         <div class="p-3 rounded-xl bg-[var(--bg-card-subtle)] border border-[var(--border-card)] flex items-start gap-2.5 text-[11px] text-[var(--text-dim)]">
           <i data-lucide="info" class="w-4 h-4 text-blue-500 shrink-0 mt-0.5"></i>
           <div>
-            <span class="font-semibold text-[var(--text-primary)]">Automatic diagnostics:</span> Includes Synapse version (v2.3.1), macOS platform, and active tab context so the developer can reproduce bugs directly.
+            <span class="font-semibold text-[var(--text-primary)]">Automatic diagnostics:</span> Includes Synapse version (v2.3.2), macOS platform, and active tab context so the developer can reproduce bugs directly.
           </div>
         </div>
 
@@ -5833,6 +5852,20 @@
               <i data-lucide="alert-triangle" class="w-3.5 h-3.5 text-amber-600 dark:text-amber-400"></i>
               <span>Slides Missing</span>
             </button>
+          `;
+        } else if (s.auto_prep_status === 'no_slide_match') {
+          autoPrepBadge = `
+            <span class="px-2.5 py-1 rounded-full border border-[var(--border-card)] bg-[var(--bg-card-subtle)] text-[var(--text-dim)] text-[10px] font-medium flex items-center gap-1 shadow-2xs" title="Auto-Prep skipped: no high-confidence slide match in OneDrive. Generate manually if needed.">
+              <i data-lucide="help-circle" class="w-3 h-3 text-[var(--text-dim)]"></i>
+              <span>No slide match — generate manually</span>
+            </span>
+          `;
+        } else if (s.auto_prep_status === 'in_batch') {
+          autoPrepBadge = `
+            <span class="px-2.5 py-1 rounded-full border border-sky-300 dark:border-sky-800/80 bg-sky-50 dark:bg-sky-950/50 text-sky-700 dark:text-sky-300 text-[10px] font-semibold flex items-center gap-1 shadow-2xs animate-pulse" title="Lecture notes are currently being prepared in background via Gemini Batch API.">
+              <i data-lucide="loader-2" class="w-3 h-3 text-sky-500 animate-spin"></i>
+              <span>Batch Preparing</span>
+            </span>
           `;
         } else if (s.auto_prep_status === 'quota_exhausted') {
           autoPrepBadge = `
@@ -11891,13 +11924,109 @@
 
     // ── Application Updates (GitHub Releases) ─────────────────────────────────
     let latestAppUpdateInfo = null;
+    let isAppUpdating = false;
+
+    window.addEventListener('update-progress', (e) => {
+      const detail = e.detail || {};
+      const wrap = document.getElementById('about-update-progress-wrap');
+      const bar = document.getElementById('about-update-progress-bar');
+      const text = document.getElementById('about-update-progress-text');
+      const pct = document.getElementById('about-update-progress-pct');
+      const installBtn = document.getElementById('about-update-install-btn');
+
+      if (wrap) wrap.classList.remove('hidden');
+      if (installBtn) {
+        installBtn.disabled = true;
+        installBtn.classList.add('opacity-50', 'pointer-events-none');
+      }
+
+      if (detail.status === 'downloading') {
+        const percent = Math.min(100, Math.max(0, detail.percent || 0));
+        if (bar) bar.style.width = `${percent}%`;
+        if (pct) pct.innerText = `${percent}%`;
+        const downloaded = detail.downloaded_mb ? Number(detail.downloaded_mb).toFixed(1) : '0';
+        const total = detail.total_mb ? Number(detail.total_mb).toFixed(1) : '?';
+        if (text) {
+          text.innerHTML = `<i data-lucide="loader-2" class="w-3 h-3 animate-spin text-emerald-600 dark:text-emerald-400"></i> Downloading update (${downloaded}/${total} MB)...`;
+          if (window.lucide) lucide.createIcons();
+        }
+      } else if (detail.status === 'extracting') {
+        if (bar) bar.style.width = '100%';
+        if (pct) pct.innerText = '100%';
+        if (text) {
+          text.innerHTML = `<i data-lucide="loader-2" class="w-3 h-3 animate-spin text-emerald-600 dark:text-emerald-400"></i> Extracting & verifying application...`;
+          if (window.lucide) lucide.createIcons();
+        }
+      } else if (detail.status === 'ready') {
+        if (bar) bar.style.width = '100%';
+        if (pct) pct.innerText = '100%';
+        if (text) {
+          text.innerHTML = `<i data-lucide="check-circle" class="w-3 h-3 text-emerald-600 dark:text-emerald-400"></i> ${detail.message || 'Update installed! Restarting Synapse...'}`;
+          if (window.lucide) lucide.createIcons();
+        }
+        showToast("Update installed! Relaunching Synapse...", "success", 4000);
+      } else if (detail.status === 'error') {
+        isAppUpdating = false;
+        if (installBtn) {
+          installBtn.disabled = false;
+          installBtn.classList.remove('opacity-50', 'pointer-events-none');
+        }
+        if (text) {
+          text.innerHTML = `<i data-lucide="alert-circle" class="w-3 h-3 text-red-500"></i> ${detail.message || 'Update failed'}`;
+          if (window.lucide) lucide.createIcons();
+        }
+        showToast(`Update error: ${detail.message || 'Download failed'}`, "error", 6000);
+      }
+    });
+
+    async function startAppUpdate() {
+      if (isAppUpdating) return;
+      if (!latestAppUpdateInfo) {
+        showToast("No update information available. Please check again.", "error");
+        return;
+      }
+      isAppUpdating = true;
+      const wrap = document.getElementById('about-update-progress-wrap');
+      if (wrap) wrap.classList.remove('hidden');
+      const installBtn = document.getElementById('about-update-install-btn');
+      if (installBtn) {
+        installBtn.disabled = true;
+        installBtn.classList.add('opacity-50', 'pointer-events-none');
+      }
+
+      showToast("Starting update download in background...", "info", 3000);
+
+      try {
+        const downloadUrl = latestAppUpdateInfo.zip_url || latestAppUpdateInfo.download_url || "";
+        if (window.pywebview && window.pywebview.api && window.pywebview.api.install_app_update) {
+          const res = await window.pywebview.api.install_app_update(downloadUrl);
+          if (!res || !res.success) {
+            isAppUpdating = false;
+            if (installBtn) {
+              installBtn.disabled = false;
+              installBtn.classList.remove('opacity-50', 'pointer-events-none');
+            }
+            showToast((res && res.error) || "Update installation failed", "error");
+          }
+        } else {
+          openAppUpdateUrl();
+        }
+      } catch (err) {
+        isAppUpdating = false;
+        if (installBtn) {
+          installBtn.disabled = false;
+          installBtn.classList.remove('opacity-50', 'pointer-events-none');
+        }
+        showToast(`Update error: ${err}`, "error");
+      }
+    }
 
     function handleAppUpdateNotification(info) {
       if (!info || !info.update_available) return;
       latestAppUpdateInfo = info;
       const verBadge = document.getElementById('about-version-badge');
       if (verBadge) {
-        verBadge.innerText = `Version ${info.current_version || '2.3.1'} (v${info.latest_version} available)`;
+        verBadge.innerText = `Version ${info.current_version || '2.3.2'} (v${info.latest_version} available)`;
         verBadge.classList.remove('bg-blue-50', 'text-blue-700');
         verBadge.classList.add('bg-emerald-50', 'text-emerald-700', 'dark:bg-emerald-950/40', 'dark:text-emerald-300');
       }
@@ -11938,7 +12067,7 @@
             handleAppUpdateNotification(res);
             if (manual) showToast(`Update found: Synapse v${res.latest_version}`, "success");
           } else if (res && res.checked) {
-            if (manual) showToast(`Synapse is up to date! (v${res.current_version || '2.3.1'})`, "success");
+            if (manual) showToast(`Synapse is up to date! (v${res.current_version || '2.3.2'})`, "success");
           } else if (manual) {
             const errMsg = (res && res.error && String(res.error).trim()) ? String(res.error).trim() : 'Connection timed out or network error';
             showToast(`Could not check for updates: ${errMsg}`, "error");
