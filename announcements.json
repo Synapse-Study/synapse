@@ -1,10 +1,10 @@
 [
   {
-    "id": "2026-11-update-notice",
-    "title": "New Update Coming Soon",
-    "message": "This is a test.",
+    "id": "v.2.3.1 Update",
+    "title": "Add a spare API Key in settings",
+    "message": "Create and add a new spare API key to be used in case the other API keys run out",
     "type": "info",
     "active": true,
-    "expires_at": "2026-12-05"
+    "expires_at": "2026-11-30"
   }
 ]
