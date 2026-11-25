@@ -3823,7 +3823,7 @@
       </div>
       <h3 class="text-lg font-bold text-[var(--text-primary)]">Synapse</h3>
       <div class="flex items-center gap-2">
-        <span id="about-version-badge" class="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-blue-50 text-blue-700 dark:bg-blue-950/40 dark:text-blue-300">Version 2.3.2</span>
+        <span id="about-version-badge" class="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-blue-50 text-blue-700 dark:bg-blue-950/40 dark:text-blue-300">Version 2.3.3</span>
         <span class="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-emerald-50 text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300 border border-emerald-200/60 dark:border-emerald-800/40 flex items-center gap-1">
           <i data-lucide="code-2" class="w-3 h-3 text-emerald-600 dark:text-emerald-400"></i> Fully Built with Python 3.12
         </span>
@@ -4232,7 +4232,7 @@
         <div class="p-3 rounded-xl bg-[var(--bg-card-subtle)] border border-[var(--border-card)] flex items-start gap-2.5 text-[11px] text-[var(--text-dim)]">
           <i data-lucide="info" class="w-4 h-4 text-blue-500 shrink-0 mt-0.5"></i>
           <div>
-            <span class="font-semibold text-[var(--text-primary)]">Automatic diagnostics:</span> Includes Synapse version (v2.3.2), macOS platform, and active tab context so the developer can reproduce bugs directly.
+            <span class="font-semibold text-[var(--text-primary)]">Automatic diagnostics:</span> Includes Synapse version (v2.3.3), macOS platform, and active tab context so the developer can reproduce bugs directly.
           </div>
         </div>
 
@@ -6487,6 +6487,13 @@
       if (typeof notesState !== 'undefined') {
         notesState.cachedDiagrams = {};
       }
+      if (typeof inAppNotesState !== 'undefined') {
+        inAppNotesState.activeNoteId = null;
+        if (typeof renderLibraryNotesTree === 'function') renderLibraryNotesTree();
+      }
+      if (typeof updateNoteModuleBlockPill === 'function') {
+        updateNoteModuleBlockPill('', '');
+      }
       document.getElementById('canvas-empty-state').classList.add('hidden');
       document.getElementById('sidebar-filename').innerText = res.filename;
       document.getElementById('sidebar-filesub').innerText = `${res.total_slides} slides loaded`;
@@ -7858,7 +7865,9 @@
       viewMode: 'preview',
       cachedDiagrams: {},
       debounceTimer: null,
-      fetchingDiagrams: false
+      fetchingDiagrams: false,
+      diagramFetchSeq: 0,
+      noteLoadSeq: 0
     };
 
     function setNotesViewMode(mode) {
@@ -8318,11 +8327,15 @@
       const missingNums = allSlideNums.filter(n => !notesState.cachedDiagrams[n] || forceDiagramsFetch);
       if (missingNums.length > 0 && !notesState.fetchingDiagrams && window.pywebview?.api?.get_slide_diagrams) {
         notesState.fetchingDiagrams = true;
+        const fetchSeq = ++notesState.diagramFetchSeq;
         if (forceDiagramsFetch) {
           showToast(`Extracting & aligning ${missingNums.length} slide diagrams...`, "info");
         }
         const activeNoteId = inAppNotesState.activeNoteId || "";
         window.pywebview.api.get_slide_diagrams(missingNums, activeNoteId, Boolean(forceDiagramsFetch)).then(res => {
+          if (fetchSeq !== notesState.diagramFetchSeq || (inAppNotesState.activeNoteId || "") !== activeNoteId) {
+            return;
+          }
           notesState.fetchingDiagrams = false;
           if (res && res.diagrams && Object.keys(res.diagrams).length > 0) {
             Object.assign(notesState.cachedDiagrams, res.diagrams);
@@ -8332,7 +8345,9 @@
             }
           }
         }).catch(() => {
-          notesState.fetchingDiagrams = false;
+          if (fetchSeq === notesState.diagramFetchSeq) {
+            notesState.fetchingDiagrams = false;
+          }
         });
       }
 
@@ -8604,7 +8619,13 @@
     }
 
     async function generateAINotes() {
+      notesState.diagramFetchSeq++;
+      notesState.noteLoadSeq++;
+      notesState.fetchingDiagrams = false;
       notesState.cachedDiagrams = {};
+      if (typeof inAppNotesState !== 'undefined') {
+        inAppNotesState.activeNoteId = null;
+      }
       const btn = document.getElementById('btn-generate-ai-notes');
       const btnText = document.getElementById('btn-generate-ai-notes-text');
       const textarea = document.getElementById('notes-textarea');
@@ -8689,20 +8710,33 @@
         const totalElapsed = Math.floor((Date.now() - startTime) / 1000);
 
         if (res && res.success) {
+          // Invalidate any in-flight note load or diagram fetch started while AI synthesis was running
+          notesState.diagramFetchSeq++;
+          notesState.noteLoadSeq++;
+          notesState.fetchingDiagrams = false;
+          notesState.cachedDiagrams = {};
+
           textarea.value = res.notes;
           if (res.diagrams && Object.keys(res.diagrams).length > 0) {
             Object.assign(notesState.cachedDiagrams, res.diagrams);
           }
-          setNotesViewMode('preview');
-          renderNotesPreview(true);
-          const usedModel = res.model_used || targetModel;
-          const styleNotice = res.style_mode === 'custom' ? ` [Personalised Style (${res.template_count || 1} templates)]` : '';
-
           if (res.in_app_saved && res.in_app_info) {
             inAppNotesState.activeNoteId = res.in_app_info.note_id;
             updateNoteModuleBlockPill(res.in_app_info.module, res.in_app_info.block);
             loadInAppNotesLibrary();
+          } else if (typeof inAppNotesState !== 'undefined') {
+            inAppNotesState.activeNoteId = null;
           }
+          setNotesViewMode('preview');
+          renderNotesPreview(false);
+          // Re-detect Notion destination in case user browsed another note while generating
+          detectedNotionTarget = null;
+          selectedNotionTargetId = null;
+          selectedNotionTargetTitle = null;
+          cachedNotionCandidates = [];
+          autoDetectNotionTargetPage(true);
+          const usedModel = res.model_used || targetModel;
+          const styleNotice = res.style_mode === 'custom' ? ` [Personalised Style (${res.template_count || 1} templates)]` : '';
 
           const inAppNotice = res.in_app_saved && res.in_app_info ? ` · Saved to ${res.in_app_info.module} · ${res.in_app_info.block}` : '';
           showToast(`Comprehensive lecture notes generated with ${usedModel}${styleNotice}${inAppNotice} in ${totalElapsed}s! ✓`, "success");
@@ -9420,10 +9454,14 @@
         notesAutoSaveTimer = null;
         await saveCurrentNoteToInAppLibrary(true);
       }
-      // Reset diagram cache so previous lecture diagrams are never mixed into this note
+      // Reset diagram cache and invalidate any in-flight diagram/note loads
+      const loadSeq = ++notesState.noteLoadSeq;
+      notesState.diagramFetchSeq++;
+      notesState.fetchingDiagrams = false;
       notesState.cachedDiagrams = {};
       try {
         const res = await window.pywebview.api.get_in_app_note(noteId);
+        if (loadSeq !== notesState.noteLoadSeq) return;
         if (res && res.success && res.note) {
           const note = res.note;
           const textarea = document.getElementById('notes-textarea');
@@ -9557,7 +9595,19 @@
         if (res && res.success) {
           if (inAppNotesState.activeNoteId === noteId) {
             inAppNotesState.activeNoteId = null;
+            notesState.diagramFetchSeq++;
+            notesState.noteLoadSeq++;
+            notesState.fetchingDiagrams = false;
+            notesState.cachedDiagrams = {};
+            const textarea = document.getElementById('notes-textarea');
+            if (textarea) textarea.value = '';
             updateNoteModuleBlockPill('', '');
+            renderNotesPreview(false);
+            detectedNotionTarget = null;
+            selectedNotionTargetId = null;
+            selectedNotionTargetTitle = null;
+            cachedNotionCandidates = [];
+            autoDetectNotionTargetPage(true);
           }
           showToast("Note deleted from library ✓", "info");
           loadInAppNotesLibrary();
@@ -12026,7 +12076,7 @@
       latestAppUpdateInfo = info;
       const verBadge = document.getElementById('about-version-badge');
       if (verBadge) {
-        verBadge.innerText = `Version ${info.current_version || '2.3.2'} (v${info.latest_version} available)`;
+        verBadge.innerText = `Version ${info.current_version || '2.3.3'} (v${info.latest_version} available)`;
         verBadge.classList.remove('bg-blue-50', 'text-blue-700');
         verBadge.classList.add('bg-emerald-50', 'text-emerald-700', 'dark:bg-emerald-950/40', 'dark:text-emerald-300');
       }
@@ -12067,7 +12117,7 @@
             handleAppUpdateNotification(res);
             if (manual) showToast(`Update found: Synapse v${res.latest_version}`, "success");
           } else if (res && res.checked) {
-            if (manual) showToast(`Synapse is up to date! (v${res.current_version || '2.3.2'})`, "success");
+            if (manual) showToast(`Synapse is up to date! (v${res.current_version || '2.3.3'})`, "success");
           } else if (manual) {
             const errMsg = (res && res.error && String(res.error).trim()) ? String(res.error).trim() : 'Connection timed out or network error';
             showToast(`Could not check for updates: ${errMsg}`, "error");

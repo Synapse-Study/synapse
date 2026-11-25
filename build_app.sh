@@ -128,7 +128,7 @@ else
     find "dist/Synapse.app" -name ".DS_Store" -delete 2>/dev/null || true
 
     # Update CFBundleShortVersionString in Info.plist
-    plutil -replace CFBundleShortVersionString -string "2.3.2" "dist/Synapse.app/Contents/Info.plist" 2>/dev/null || true
+    plutil -replace CFBundleShortVersionString -string "2.3.3" "dist/Synapse.app/Contents/Info.plist" 2>/dev/null || true
 
     # 8.1 Re-sign app bundle ad-hoc to fix code signatures invalidated by post-build copies
     echo "Signing dist/Synapse.app bundle ad-hoc..."

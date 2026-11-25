@@ -127,7 +127,7 @@ _C_EXTENSION_LOCK = threading.Lock()
 # ─────────────────────────────────────────────────────────────────────────────
 # 1. CONSTANTS, PATHS & DEFAULTS
 # ─────────────────────────────────────────────────────────────────────────────
-CURRENT_VERSION = "2.3.2"
+CURRENT_VERSION = "2.3.3"
 GITHUB_REPO = "Synapse-Study/synapse"
 LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 RELEASES_LIST_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases"
@@ -1077,10 +1077,12 @@ class SlideParsEngine:
         return images, "\n".join(text_lines)
 
     @staticmethod
-    def detect_slide_visuals(slide) -> dict:
+    def detect_slide_visuals(slide, slide_width: Optional[int] = None, slide_height: Optional[int] = None) -> dict:
         """
         Inspect slide shapes comprehensively to detect any visual diagrams, charts,
         vector drawings, flowcharts, pathways, curves, or embedded pictures.
+        Filters out decorative section-divider slides (single full-bleed photo with
+        brief title) and text-heavy slides with only a minor illustrative photo.
         """
         pic_count = 0
         group_count = 0
@@ -1088,12 +1090,29 @@ class SlideParsEngine:
         connector_count = 0
         freeform_count = 0
         vector_count = 0
+        full_bleed_pic = False
+        max_pic_area_ratio = 0.0
+        word_count = 0
+        slide_area = float(slide_width * slide_height) if (slide_width and slide_height) else 0.0
 
         for sh in slide.shapes:
             st = getattr(sh, "shape_type", None)
             name = (getattr(sh, "name", "") or "").lower()
+            if getattr(sh, "has_text_frame", False):
+                txt = (sh.text_frame.text or "").strip()
+                if txt:
+                    word_count += len(txt.split())
             if st == 13 or "picture" in name or "image" in name:
                 pic_count += 1
+                if slide_width and slide_height and slide_area > 0:
+                    try:
+                        area_ratio = (sh.width * sh.height) / slide_area
+                        if area_ratio > max_pic_area_ratio:
+                            max_pic_area_ratio = area_ratio
+                        if (sh.width / slide_width) >= 0.85 and (sh.height / slide_height) >= 0.85:
+                            full_bleed_pic = True
+                    except Exception:
+                        pass
             elif getattr(sh, "has_chart", False) or "chart" in name:
                 chart_count += 1
             elif st == 6 or "group" in name:
@@ -1107,22 +1126,82 @@ class SlideParsEngine:
                 if any(k in name for k in ["arrow", "arc", "oval", "circle", "curve", "rect", "shape"]) or not has_text:
                     vector_count += 1
 
-        has_diagram = (pic_count > 0 or chart_count > 0 or group_count > 0 or 
-                       freeform_count > 0 or connector_count >= 1 or vector_count >= 2)
+        no_structured_visuals = (
+            chart_count == 0
+            and group_count == 0
+            and freeform_count == 0
+            and connector_count == 0
+            and vector_count == 0
+        )
+        is_decorative_divider = (
+            pic_count == 1
+            and no_structured_visuals
+            and full_bleed_pic
+            and word_count <= 6
+        )
+        is_minor_illustrative_photo = (
+            pic_count == 1
+            and no_structured_visuals
+            and word_count >= 75
+            and 0.0 < max_pic_area_ratio < 0.16
+        )
+        skip_visual = is_decorative_divider or is_minor_illustrative_photo
+
+        has_diagram = (
+            not skip_visual
+            and (
+                pic_count > 0 or chart_count > 0 or group_count > 0
+                or freeform_count > 0 or connector_count >= 1 or vector_count >= 2
+            )
+        )
 
         details = []
-        if pic_count: details.append(f"{pic_count} image(s)")
-        if chart_count: details.append(f"{chart_count} chart(s)")
-        if group_count: details.append(f"{group_count} diagram group(s)")
-        if freeform_count: details.append(f"{freeform_count} curve/freeform drawing(s)")
-        if connector_count: details.append(f"{connector_count} flowchart connector(s)/arrow(s)")
-        if vector_count: details.append(f"{vector_count} schematic shape(s)")
+        if not skip_visual:
+            if pic_count: details.append(f"{pic_count} image(s)")
+            if chart_count: details.append(f"{chart_count} chart(s)")
+            if group_count: details.append(f"{group_count} diagram group(s)")
+            if freeform_count: details.append(f"{freeform_count} curve/freeform drawing(s)")
+            if connector_count: details.append(f"{connector_count} flowchart connector(s)/arrow(s)")
+            if vector_count: details.append(f"{vector_count} schematic shape(s)")
 
         return {
             "has_diagram": has_diagram,
-            "image_count": pic_count + group_count + chart_count,
+            "is_decorative_divider": is_decorative_divider,
+            "is_minor_illustrative_photo": is_minor_illustrative_photo,
+            "image_count": 0 if skip_visual else (pic_count + group_count + chart_count),
             "summary": ", ".join(details) if details else "None"
         }
+
+    @staticmethod
+    def is_title_or_admin_slide(slide_num: int, title: str, body: str) -> bool:
+        """Return True for cover, ILO, administrative, or closing slides that must never yield diagrams."""
+        if slide_num <= 1:
+            return True
+        combined = (title + " " + body).lower()
+        return any(k in combined for k in [
+            "intended learning", "learning outcome", "learning objective", "aims of this lecture", "aims",
+            "table of contents", "outline", "reading list", "mentimeter", "acknowledgements", "own soundtrack"
+        ])
+
+    @staticmethod
+    def is_non_diagram_slide(prs: Optional[Presentation], slide_num: int) -> bool:
+        """Return True if slide_num is a title/admin slide, decorative section divider, or text-heavy minor-photo slide."""
+        if slide_num <= 1:
+            return True
+        if not prs or slide_num > len(prs.slides):
+            return False
+        sl = prs.slides[slide_num - 1]
+        _, txt = SlideParsEngine.extract_slide_data(sl)
+        title = ""
+        try:
+            if sl.shapes.title and sl.shapes.title.text:
+                title = sl.shapes.title.text.strip()
+        except Exception:
+            pass
+        if SlideParsEngine.is_title_or_admin_slide(slide_num, title, txt):
+            return True
+        vis = SlideParsEngine.detect_slide_visuals(sl, prs.slide_width, prs.slide_height)
+        return bool(vis.get("is_decorative_divider") or vis.get("is_minor_illustrative_photo"))
 
     @staticmethod
     def _get_flat_shapes(shapes) -> list:
@@ -1788,7 +1867,7 @@ class GeminiCardsEngine:
                 models_to_try.append(m)
 
         last_error = ""
-        call_timeout = min(timeout, 50)
+        call_timeout = (15, min(timeout, 180))
 
         for idx, attempt_model in enumerate(models_to_try):
             if attempt_model in ["gemini-4-hydrogen", "gemini-3.8-flash"] and restrict_to_flagship:
@@ -2237,15 +2316,22 @@ class GeminiNotesEngine:
         return f"### Slide {slide_num} Key Takeaways\n\n" + "\n".join(f"- {line}" for line in slide_text.split("\n") if line.strip())
 
     @staticmethod
+    def _is_title_or_admin_slide(slide_num: int, title: str, body: str) -> bool:
+        return SlideParsEngine.is_title_or_admin_slide(slide_num, title, body)
+
+    @staticmethod
     def _build_slides_summary_str(slides_slice: list[dict]) -> str:
         s_str = ""
         for s in slides_slice:
-            is_title_or_admin = (s['slide_num'] == 1) or any(k in (s['title'] + " " + s['body']).lower() for k in [
-                "intended learning", "learning outcome", "learning objective", "aims of this lecture", "aims",
-                "table of contents", "outline", "reading list", "mentimeter", "acknowledgements"
-            ])
+            is_title_or_admin = s.get("is_title_or_admin") or GeminiNotesEngine._is_title_or_admin_slide(
+                s['slide_num'], s['title'], s['body']
+            )
             s_str += f"\n--- SLIDE {s['slide_num']}: {s['title']} ---\n"
-            if s.get("has_diagram") and not is_title_or_admin:
+            if is_title_or_admin or s.get("is_decorative_divider"):
+                s_str += f"[Section Divider / Administrative Slide — DO NOT emit a (slide {s['slide_num']}: ...) diagram marker for this slide.]\n"
+            elif s.get("is_minor_illustrative_photo"):
+                s_str += f"[Text-Heavy Slide with Minor Illustrative Photo — DO NOT emit a (slide {s['slide_num']}: ...) screenshot marker; convert all slide points into structured text notes instead.]\n"
+            elif s.get("has_diagram"):
                 s_str += f"[Visual Content on Slide {s['slide_num']}: {s.get('visual_summary', 'diagram')}. MANDATORY: Emit '(slide {s['slide_num']}: what the diagram/graph shows)' on its own line followed by revision caption. DIAGRAM-DRIVEN: Since this diagram explains the concept, keep accompanying text lean and concise!]\n"
             if s['body']:
                 s_str += f"Slide Text:\n{s['body']}\n"
@@ -2264,7 +2350,7 @@ class GeminiNotesEngine:
         ilo_text = ""
         for i, slide in enumerate(prs.slides):
             raw_imgs, text = SlideParsEngine.extract_slide_data(slide)
-            vis_info = SlideParsEngine.detect_slide_visuals(slide)
+            vis_info = SlideParsEngine.detect_slide_visuals(slide, prs.slide_width, prs.slide_height)
             title = ""
             try:
                 if slide.shapes.title and slide.shapes.title.text:
@@ -2287,13 +2373,20 @@ class GeminiNotesEngine:
             if not ilo_text and any(k in t_low for k in ["intended learning", "learning outcome", "learning objective", "objectives", "aims of this lecture", "aims"]):
                 ilo_text = text.strip()
 
+            is_divider = vis_info.get("is_decorative_divider", False)
+            is_minor_photo = vis_info.get("is_minor_illustrative_photo", False)
+            is_admin = GeminiNotesEngine._is_title_or_admin_slide(i + 1, title, text)
+            skip_visual = is_divider or is_minor_photo or is_admin
             slides_data.append({
                 "slide_num": i + 1,
                 "title": title,
                 "body": text.strip(),
                 "notes": notes_slide,
-                "has_diagram": vis_info["has_diagram"] or len(raw_imgs) > 0,
-                "image_count": max(len(raw_imgs), vis_info["image_count"]),
+                "is_decorative_divider": is_divider,
+                "is_minor_illustrative_photo": is_minor_photo,
+                "is_title_or_admin": is_admin,
+                "has_diagram": False if skip_visual else (vis_info["has_diagram"] or len(raw_imgs) > 0),
+                "image_count": 0 if skip_visual else max(len(raw_imgs), vis_info["image_count"]),
                 "visual_summary": vis_info["summary"]
             })
 
@@ -2392,7 +2485,7 @@ CRITICAL COMPLETENESS, THEORETICAL RIGOR & DIAGRAM CAPTURE INSTRUCTIONS:
 - Emit explicit diagram reference on its own line:
 (slide N: what the diagram shows)
 followed by a 1-line user revision caption on the next line ("what to notice, what to ignore, what to memorize").
-- STRICT PROHIBITION: NEVER emit a diagram reference for Slide 1 (Title slide with university logos/module codes) or administrative/ILO slides. Only emit markers for content slides (Slide 2+).
+- STRICT PROHIBITION: NEVER emit a diagram reference for Slide 1 (Title slide with university logos/module codes), decorative section-divider/title slides (e.g. a background photo with only a section title like 'Haemorrhage' or 'Orthostasis'), or administrative/ILO/closing slides. Only emit markers for genuine informational content slides (Slide 2+).
 - Visual deduplication rule: If consecutive slides repeat the exact same illustration, emit only ONE diagram marker under the section where first introduced.
 - Anchor distinct diagrams individually under their relevant sections.
 
@@ -2494,6 +2587,30 @@ Output ONLY raw markdown text starting with ## 🎯 Learning Objectives. Do not 
             restrict_to_flagship=True,
             images=thumbnails
         ).strip()
+
+        # Strip any accidental diagram marker + trivial divider caption emitted for non-diagram slides
+        skip_nums = {
+            s["slide_num"] for s in slides_data
+            if s["slide_num"] <= 1 or s.get("is_decorative_divider") or s.get("is_minor_illustrative_photo") or s.get("is_title_or_admin")
+        }
+        if skip_nums:
+            cleaned_lines = []
+            raw_lines = raw_notes.splitlines()
+            idx = 0
+            while idx < len(raw_lines):
+                ln = raw_lines[idx]
+                m = re.match(r"^\(\s*slides?\s+([0-9\s,\-–and]+?):\s*.*?\)\s*$", ln.strip(), re.IGNORECASE)
+                if m:
+                    nums = [int(n) for n in re.findall(r"\d+", m.group(1))]
+                    if nums and all(n in skip_nums for n in nums):
+                        idx += 1
+                        # Also drop a trivial 1-line divider caption immediately following the removed marker
+                        if idx < len(raw_lines) and re.match(r"^(section divider|title slide|decorative|cover slide)\.?\s*$", raw_lines[idx].strip(), re.IGNORECASE):
+                            idx += 1
+                        continue
+                cleaned_lines.append(ln)
+                idx += 1
+            raw_notes = re.sub(r"\n{3,}", "\n\n", "\n".join(cleaned_lines)).strip()
 
         style_mode = self._config.get("NOTES_STYLE_MODE", "default")
         is_custom = (style_mode == "custom" and len(list(self._config.get("CUSTOM_NOTE_TEMPLATES", []) or [])) > 0)
@@ -2699,24 +2816,105 @@ class NotionSyncEngine:
             return "".join(part.get("plain_text", "") for part in props["title"]).strip()
         return ""
 
+    def _discover_database_ids(self, headers: dict) -> list[str]:
+        """Return configured NOTION_PAGE_ID or auto-discover shared session/lecture databases."""
+        db_id = self._config.get("NOTION_PAGE_ID", "").strip()
+        if db_id:
+            return [db_id.replace("-", "")]
+        try:
+            res = requests.post(
+                "https://api.notion.com/v1/search",
+                headers={**headers, "Content-Type": "application/json"},
+                json={"filter": {"value": "database", "property": "object"}, "page_size": 15},
+                timeout=15
+            )
+            if res.status_code != 200:
+                return []
+            preferred, fallback = [], []
+            for d in res.json().get("results", []):
+                did = (d.get("id") or "").replace("-", "")
+                if not did:
+                    continue
+                dtitle = "".join(t.get("plain_text", "") for t in d.get("title", [])).lower()
+                if any(k in dtitle for k in ("session", "lecture", "curriculum", "notes", "timetable")):
+                    preferred.append(did)
+                elif not any(k in dtitle for k in ("task", "todo")):
+                    fallback.append(did)
+            return preferred or fallback
+        except Exception:
+            return []
+
+    @staticmethod
+    def _query_database_pages(clean_db_id: str, headers: dict, max_pages: int = 10) -> list[dict]:
+        """Paginate through a Notion database and return all page objects."""
+        pages = []
+        has_more = True
+        start_cursor = None
+        page_count = 0
+        while has_more and page_count < max_pages:
+            try:
+                payload: dict = {"page_size": 100}
+                if start_cursor:
+                    payload["start_cursor"] = start_cursor
+                db_res = requests.post(
+                    f"https://api.notion.com/v1/databases/{clean_db_id}/query",
+                    headers={**headers, "Content-Type": "application/json"},
+                    json=payload,
+                    timeout=15
+                )
+                if db_res.status_code != 200:
+                    break
+                db_data = db_res.json()
+                for r in db_data.get("results", []):
+                    if r.get("object") == "page":
+                        pages.append(r)
+                has_more = db_data.get("has_more", False)
+                start_cursor = db_data.get("next_cursor")
+                page_count += 1
+            except Exception:
+                break
+        return pages
+
     def search_all_notion_pages(self, query: str = "", limit: int = 25) -> list[dict]:
         headers = self._get_headers()
         seen: dict[str, dict] = {}
 
-        # 1. Database query if database ID configured
-        db_id = self._config.get("NOTION_PAGE_ID", "").strip()
-        if db_id:
-            clean_db_id = db_id.replace("-", "")
+        # 1. Database query (configured or auto-discovered Sessions database)
+        for clean_db_id in self._discover_database_ids(headers):
+            for r in self._query_database_pages(clean_db_id, headers, max_pages=3):
+                pid = r.get("id")
+                title = self._extract_page_title(r)
+                if pid and title:
+                    seen[pid] = {"id": pid, "title": title, "url": r.get("url", "")}
+
+        # 2. Workspace search (use concise code/keywords if query is long)
+        stop_words = {
+            "the", "and", "to", "of", "in", "for", "a", "an", "on", "with", "without",
+            "from", "by", "at", "as", "is", "are", "slides", "lecture", "notes"
+        }
+        q_raw = (query or "").strip()
+        search_queries = [q_raw] if q_raw else [""]
+        if q_raw:
+            code_m = re.search(r"\b([A-Z]{2,5}[-_ ]*\d{1,3}[A-Z]?)\b", q_raw, re.IGNORECASE)
+            if code_m and code_m.group(1).strip().lower() != q_raw.lower():
+                search_queries.insert(0, code_m.group(1).strip())
+
+        for sq in search_queries[:2]:
             try:
-                db_payload = {"page_size": min(limit * 2, 100)}
-                db_res = requests.post(
-                    f"https://api.notion.com/v1/databases/{clean_db_id}/query",
+                search_payload: dict = {
+                    "filter": {"value": "page", "property": "object"},
+                    "page_size": min(limit * 2, 100)
+                }
+                if sq:
+                    search_payload["query"] = sq
+                res = requests.post(
+                    "https://api.notion.com/v1/search",
                     headers={**headers, "Content-Type": "application/json"},
-                    json=db_payload,
+                    json=search_payload,
                     timeout=15
                 )
-                if db_res.status_code == 200:
-                    for r in db_res.json().get("results", []):
+                if res.status_code == 200:
+                    for r in res.json().get("results", []):
                         if r.get("object") == "page":
                             pid = r.get("id")
                             title = self._extract_page_title(r)
@@ -2725,33 +2923,16 @@ class NotionSyncEngine:
             except Exception:
                 pass
 
-        # 2. Workspace search
-        try:
-            search_payload: dict = {
-                "filter": {"value": "page", "property": "object"},
-                "page_size": min(limit * 2, 100)
-            }
-            if query and query.strip():
-                search_payload["query"] = query.strip()
-            res = requests.post(
-                "https://api.notion.com/v1/search",
-                headers={**headers, "Content-Type": "application/json"},
-                json=search_payload,
-                timeout=15
-            )
-            if res.status_code == 200:
-                for r in res.json().get("results", []):
-                    if r.get("object") == "page":
-                        pid = r.get("id")
-                        title = self._extract_page_title(r)
-                        if pid and title:
-                            seen[pid] = {"id": pid, "title": title, "url": r.get("url", "")}
-        except Exception:
-            pass
-
         results = list(seen.values())
-        if query and query.strip():
-            q_clean = query.strip().lower()
+        if q_raw:
+            q_clean = q_raw.lower()
+            q_meaningful = [
+                w for w in re.sub(r"[^a-z0-9]+", " ", q_clean).split()
+                if len(w) > 2 and w not in stop_words and not re.match(r"^20\d\d$", w)
+            ]
+            if not q_meaningful:
+                q_meaningful = [w for w in q_clean.split() if len(w) > 2]
+
             def _rank(item):
                 t_lower = item["title"].lower()
                 if t_lower == q_clean:
@@ -2760,13 +2941,12 @@ class NotionSyncEngine:
                     return 1
                 if q_clean in t_lower:
                     return 2
-                q_words = [w for w in q_clean.split() if len(w) > 1]
-                matches = sum(1 for w in q_words if w in t_lower)
-                return 10 - matches
+                matches = sum(1 for w in q_meaningful if w in t_lower)
+                return 20 - matches
 
             filtered = [
                 it for it in results
-                if q_clean in it["title"].lower() or any(w in it["title"].lower() for w in q_clean.split() if len(w) > 2)
+                if q_clean in it["title"].lower() or any(w in it["title"].lower() for w in q_meaningful)
             ]
             filtered.sort(key=_rank)
             return filtered[:limit]
@@ -2824,38 +3004,26 @@ class NotionSyncEngine:
         code_match = re.search(r'\b([A-Z]{3,5}[-_ ]*\d{1,3}[A-Z]?)\b', clean_q, re.IGNORECASE)
         code_str = code_match.group(1).upper() if code_match else ""
 
-        # Extract title from presentation slide 0 if available
+        # Extract title from presentation slide 0 if available (skip institutional banner headers)
         slide1_title = ""
         prs = getattr(self._state, "presentation", None)
         if prs and len(prs.slides) > 0:
             s0 = prs.slides[0]
+            boilerplate = ("life sciences", "faculty of", "school of", "department of", "king's college", "mbbs")
             try:
                 if s0.shapes.title and s0.shapes.title.text:
-                    slide1_title = s0.shapes.title.text.strip().replace("\x0b", " ").split("\n")[0].strip()
+                    cand = s0.shapes.title.text.strip().replace("\x0b", " ").split("\n")[0].strip()
+                    if cand and not any(bp in cand.lower() for bp in boilerplate):
+                        slide1_title = cand
             except Exception:
                 pass
             if not slide1_title:
                 for sh in s0.shapes:
                     if sh.has_text_frame and sh.text_frame.text.strip():
-                        slide1_title = sh.text_frame.text.strip().split("\n")[0].strip()
-                        break
-
-        # Build prioritized search terms to query Notion API
-        search_terms = []
-        if clean_topic:
-            search_terms.append(clean_topic)
-        if topic_no_num and topic_no_num not in search_terms:
-            search_terms.append(topic_no_num)
-        if slide1_title and slide1_title not in search_terms:
-            s1_clean = re.sub(r'(\.pptx|\.pdf)$', '', slide1_title, flags=re.IGNORECASE).strip()
-            if s1_clean:
-                search_terms.append(s1_clean)
-        if detected_block and clean_topic:
-            search_terms.append(f"{detected_block} {clean_topic}")
-        if code_str and code_str not in search_terms:
-            search_terms.append(code_str)
-        if clean_q not in search_terms:
-            search_terms.append(clean_q)
+                        cand = sh.text_frame.text.strip().split("\n")[0].strip()
+                        if cand and not any(bp in cand.lower() for bp in boilerplate):
+                            slide1_title = cand
+                            break
 
         # Helper to normalize strings for comparison
         def _norm(s: str) -> str:
@@ -2878,43 +3046,40 @@ class NotionSyncEngine:
             'system', 'systems', 'introduction', 'intro', 'overview', 'principles', 'foundations',
             'basis', 'structure', 'function', 'tutorial', 'session', 'lecture', 'revision', 'summary'
         }
+        specific_query_words = [w for w in core_query_words if w not in GENERIC_MEDICAL_CATEGORIES and len(w) >= 3]
+
+        # Build prioritized search terms to query Notion API (specific code & distinguishing words first!)
+        search_terms = []
+        if code_str:
+            search_terms.append(code_str)
+        if clean_topic and clean_topic not in search_terms:
+            search_terms.append(clean_topic)
+        if specific_query_words:
+            # Longest distinguishing medical keyword avoids Notion /v1/search stopword flooding
+            longest_kw = max(specific_query_words, key=len)
+            if longest_kw not in search_terms:
+                search_terms.append(longest_kw)
+        if topic_no_num and topic_no_num not in search_terms:
+            search_terms.append(topic_no_num)
+        if slide1_title and slide1_title not in search_terms:
+            s1_clean = re.sub(r'(\.pptx|\.pdf)$', '', slide1_title, flags=re.IGNORECASE).strip()
+            if s1_clean:
+                search_terms.append(s1_clean)
+        if detected_block and clean_topic and f"{detected_block} {clean_topic}" not in search_terms:
+            search_terms.append(f"{detected_block} {clean_topic}")
+        if clean_q not in search_terms:
+            search_terms.append(clean_q)
 
         # 2. Query Notion API
         seen_pages: dict[str, dict] = {}
 
-        # 2a. If NOTION_PAGE_ID is configured and points to a database, query database directly with pagination
-        db_id = self._config.get("NOTION_PAGE_ID", "").strip()
-        if db_id:
-            clean_db_id = db_id.replace("-", "")
-            has_more = True
-            start_cursor = None
-            page_count = 0
-            while has_more and page_count < 10:  # Fetch up to 1000 database items
-                try:
-                    payload = {"page_size": 100}
-                    if start_cursor:
-                        payload["start_cursor"] = start_cursor
-                    db_res = requests.post(
-                        f"https://api.notion.com/v1/databases/{clean_db_id}/query",
-                        headers={**headers, "Content-Type": "application/json"},
-                        json=payload,
-                        timeout=15
-                    )
-                    if db_res.status_code == 200:
-                        db_data = db_res.json()
-                        for r in db_data.get("results", []):
-                            if r.get("object") == "page":
-                                seen_pages[r.get("id")] = r
-                        has_more = db_data.get("has_more", False)
-                        start_cursor = db_data.get("next_cursor")
-                        page_count += 1
-                    else:
-                        break
-                except Exception:
-                    break
+        # 2a. Query configured database OR auto-discovered shared databases directly with pagination
+        for clean_db_id in self._discover_database_ids(headers):
+            for r in self._query_database_pages(clean_db_id, headers, max_pages=10):
+                seen_pages[r.get("id")] = r
 
         # 2b. Run Notion global workspace search for candidate queries
-        for term in search_terms[:4]:
+        for term in search_terms[:6]:
             try:
                 res = requests.post(
                     "https://api.notion.com/v1/search",
@@ -2937,8 +3102,6 @@ class NotionSyncEngine:
         q_norm = _norm(clean_q)
         clean_topic_norm = _norm(clean_topic)
         topic_no_num_norm = _norm(topic_no_num)
-
-        specific_query_words = [w for w in core_query_words if w not in GENERIC_MEDICAL_CATEGORIES and len(w) >= 3]
 
         scored_candidates = []
         for page_id, r in seen_pages.items():
@@ -3520,6 +3683,8 @@ class NotionSyncEngine:
 
                 pushed_any_img = False
                 for s_num in slide_nums:
+                    if prs and SlideParsEngine.is_non_diagram_slide(prs, s_num):
+                        continue
                     img_blob = None
                     # 1. Prefer verified note diagram already saved and previewed on disk
                     if diag_dir:
@@ -6584,19 +6749,36 @@ class AppAPI:
             if not saved_notes:
                 return None
 
-            lec_code = (session.get("lec_code") or "").upper().strip()
-            topic = (session.get("clean_title") or "").strip().lower()
-            code = (session.get("code") or "").upper().strip()
+            def _compact(val: str) -> str:
+                return re.sub(r"[^a-z0-9]+", "", (val or "").lower())
+
+            def _words(val: str) -> str:
+                return re.sub(r"[^a-z0-9]+", " ", (val or "").lower()).strip()
+
+            lec_code = _compact(session.get("lec_code") or "")
+            code = _compact(session.get("code") or "")
+            topic_words = _words(session.get("clean_title") or "")
+            # Strip leading lecture code from topic_words if present so topic substring matches cleanly
+            topic_no_code = re.sub(r"^[a-z]{2,5}\s*\d{1,3}[a-z]?\s+", "", topic_words).strip()
 
             for note_id, note in saved_notes.items():
-                title_low = (note.get("title") or "").strip().lower()
-                source_file = (note.get("source_file") or "").upper()
-                if lec_code and (lec_code in title_low.upper() or lec_code in source_file):
-                    return {"id": note_id, "title": note.get("title", "")}
-                if topic and len(topic) > 5 and topic in title_low:
-                    return {"id": note_id, "title": note.get("title", "")}
-                if code and code in title_low.upper():
-                    return {"id": note_id, "title": note.get("title", "")}
+                title_raw = (note.get("title") or "").strip()
+                source_raw = (note.get("source_file") or "").strip()
+                title_words = _words(title_raw)
+                title_compact = _compact(title_raw)
+                source_compact = _compact(source_raw)
+
+                for cand_code in (lec_code, code):
+                    if cand_code:
+                        # Boundary-safe match so PCRS1 does not match PCRS10
+                        pat = rf"(?<![a-z0-9]){re.escape(cand_code)}(?![0-9])"
+                        if re.search(pat, title_compact) or re.search(pat, source_compact):
+                            return {"id": note_id, "title": title_raw}
+
+                if topic_no_code and len(topic_no_code) > 5 and topic_no_code in title_words:
+                    return {"id": note_id, "title": title_raw}
+                if topic_words and len(topic_words) > 5 and topic_words in title_words:
+                    return {"id": note_id, "title": title_raw}
         except Exception as e:
             print(f"[_find_saved_note_for_session] Error: {e}")
         return None
@@ -8567,7 +8749,9 @@ Return a strictly valid JSON object matching this schema:
                                 all_s_nums.add(n)
                     for s_num in all_s_nums:
                         try:
-                            png_bytes = self._notion_engine.get_best_slide_image(self.state.presentation, s_num)
+                            if SlideParsEngine.is_non_diagram_slide(self.state.presentation, s_num):
+                                continue
+                            png_bytes = self._notion_engine.get_best_slide_image(self.state.presentation, s_num, pptx_path=self.state.pptx_path)
                             if png_bytes:
                                 (diag_dir / f"slide_{s_num}.png").write_bytes(png_bytes)
                                 (SLIDE_CACHE_DIR / f"{safe_src}_slide_{s_num}.png").write_bytes(png_bytes)
@@ -8577,6 +8761,9 @@ Return a strictly valid JSON object matching this schema:
                             print(f"[generate_ai_notes] Diagram extraction error for slide {s_num}: {d_err}")
             except Exception as e:
                 print(f"[generate_ai_notes] Local note auto-save note: {e}")
+
+            if in_app_info:
+                self._notify_frontend("timetable-update", {"type": "note_saved"})
 
             return {
                 "success": True,
@@ -8615,7 +8802,10 @@ Return a strictly valid JSON object matching this schema:
                 title = heading_match.group(1).strip()
         if not title and not note_id:
             title = "Lecture Note"
-        return self._in_app_notes_manager.save_note(title, content, module=module, block=block, source_file=source_file, note_id=note_id)
+        res = self._in_app_notes_manager.save_note(title, content, module=module, block=block, source_file=source_file, note_id=note_id)
+        if res.get("success"):
+            self._notify_frontend("timetable-update", {"type": "note_saved"})
+        return res
 
     def get_in_app_notes(self, module: str = "", block: str = "", search: str = "") -> dict:
         return self._in_app_notes_manager.list_notes(module=module, block=block, search=search)
@@ -8624,7 +8814,10 @@ Return a strictly valid JSON object matching this schema:
         return self._in_app_notes_manager.get_note(note_id)
 
     def delete_in_app_note(self, note_id: str) -> dict:
-        return self._in_app_notes_manager.delete_note(note_id)
+        res = self._in_app_notes_manager.delete_note(note_id)
+        if res.get("success"):
+            self._notify_frontend("timetable-update", {"type": "note_deleted"})
+        return res
 
     def get_curriculum_structure(self) -> dict:
         return {"success": True, "structure": InAppNotesManager.KCL_STRUCTURE}
@@ -8776,6 +8969,8 @@ Return a strictly valid JSON object matching this schema:
         # Extract missing diagrams, persist to disk for eternity, and return
         for s_int in missing_nums:
             try:
+                if SlideParsEngine.is_non_diagram_slide(prs, s_int):
+                    continue
                 png_bytes = self._notion_engine.get_best_slide_image(prs, s_int, pptx_path=prs_path)
                 if png_bytes:
                     b64 = base64.b64encode(png_bytes).decode("ascii")
@@ -9769,6 +9964,14 @@ def main():
     )
     api.set_window(window)
 
+    def _on_window_closing():
+        api._stop_requested = True
+        api._window = None
+        if getattr(api, "_announcements_engine", None):
+            api._announcements_engine._window = None
+
+    window.events.closing += _on_window_closing
+
     def _ensure_webview_visible():
         try:
             from webview.platforms.cocoa import BrowserView
@@ -9797,6 +10000,15 @@ def main():
     native_menus = build_native_menu(api)
     webview_storage = str(APP_DATA_DIR / "webview_data")
     Path(webview_storage).mkdir(parents=True, exist_ok=True)
+
+    # Daemonize pywebview's BottleServer HTTP request threads so in-flight
+    # js_api calls cannot block Python shutdown with a 15-30s beachball on close.
+    try:
+        import socketserver
+        socketserver.ThreadingMixIn.daemon_threads = True
+    except Exception:
+        pass
+
     webview.start(
         func=on_started,
         menu=native_menus,
@@ -9806,6 +10018,12 @@ def main():
         private_mode=False,
         storage_path=webview_storage
     )
+    try:
+        sys.stdout.flush()
+        sys.stderr.flush()
+    except Exception:
+        pass
+    os._exit(0)
 
 if __name__ == "__main__":
     main()
